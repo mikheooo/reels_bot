@@ -1,0 +1,22 @@
+
+# Secrets
+.env
+*.key
+*.pem
+twitter_env.sh
+
+# Caches & Envs
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+
+# Logs & Data
+*.log
+*.sqlite
+*.db
+*.json
+!package.json
+!package-lock.json
+!vacancies.json
