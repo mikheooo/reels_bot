@@ -109,22 +109,35 @@ async def get_video_dimensions(file_path: str) -> tuple[int, int]:
 
 
 async def analyze_video(file_path: str) -> str:
-    def _upload_and_analyze():
-        video_file = genai.upload_file(path=file_path)
-        return video_file
+    keys = []
+    for i in range(1, 10):
+        k = os.getenv(f"GEMINI_API_KEY_{i}")
+        if k: keys.append(k)
+    if not keys:
+        keys.append(settings.gemini_api_key)
+        
+    last_error = None
+    for key in keys:
+        genai.configure(api_key=key)
+        logger.info(f"Trying Gemini API key ending in ...{key[-4:] if key else 'None'}")
+        
+        try:
+            def _upload_and_analyze():
+                return genai.upload_file(path=file_path)
 
-    video_file = await asyncio.to_thread(_upload_and_analyze)
-    
-    while video_file.state.name == "PROCESSING":
-        await asyncio.sleep(3)
-        video_file = await asyncio.to_thread(genai.get_file, video_file.name)
-        
-    if video_file.state.name == "FAILED":
-        raise Exception("Gemini video processing failed.")
-        
-    def _generate():
-        model = genai.GenerativeModel(model_name="gemini-3.5-flash")
-        prompt = """Проанализируй это короткое видео подробно:
+            video_file = await asyncio.to_thread(_upload_and_analyze)
+            
+            while video_file.state.name == "PROCESSING":
+                await asyncio.sleep(3)
+                video_file = await asyncio.to_thread(genai.get_file, video_file.name)
+                
+            if video_file.state.name == "FAILED":
+                raise Exception("Gemini video processing failed.")
+                
+            def _generate():
+                # Возвращаем flash, так как у pro жесткий лимит 2 RPM
+                model = genai.GenerativeModel(model_name="gemini-3.5-flash")
+                prompt = """Проанализируй это короткое видео подробно:
 
 1. О чём оно? Опиши содержание (что показано, что говорят, какая идея/концепция)
 2. Что за техника/трюк/решение демонстрируется?
@@ -159,13 +172,23 @@ async def analyze_video(file_path: str) -> str:
    КРИТЕРИИ ГОТОВНОСТИ: [как проверим что работает]
    
    Если реализация невозможна или нерациональна — напиши почему и предложи альтернативу."""
-        response = model.generate_content([video_file, prompt])
-        return response.text
-        
-    result = await asyncio.to_thread(_generate)
-    
-    await asyncio.to_thread(genai.delete_file, video_file.name)
-    return result
+                response = model.generate_content([video_file, prompt])
+                return response.text
+                
+            result = await asyncio.to_thread(_generate)
+            await asyncio.to_thread(genai.delete_file, video_file.name)
+            return result
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "429" in error_msg or "quota" in error_msg or "exhausted" in error_msg:
+                logger.warning(f"Key rate limited/exhausted. Switching to next. Error: {e}")
+                last_error = e
+                continue # переходим к следующему ключу
+            else:
+                raise e
+                
+    raise last_error or Exception("All API keys failed")
 
 def _split_text(text: str, limit: int = 4096) -> list[str]:
     """Split long text into chunks under Telegram's message limit."""

@@ -2,6 +2,7 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -15,12 +16,17 @@ services:
       retries: 5
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
   bot:
     build: .
     command: python -m app.bot.main
     env_file: .env
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
+    volumes:
+      - ./gcp-key.json:/app/gcp-key.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,6 +37,10 @@ services:
     build: .
     command: arq app.worker.settings.WorkerSettings
     env_file: .env
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
+    volumes:
+      - ./gcp-key.json:/app/gcp-key.json:ro
     depends_on:
       postgres:
         condition: service_healthy
