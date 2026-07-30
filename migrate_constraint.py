@@ -1,7 +1,10 @@
 import asyncio
-from sqlalchemy.ext.asyncio import create_async_engine
+
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.core.config import settings
+
 
 async def add_constraint():
     engine = create_async_engine(settings.db_url, echo=True)

@@ -1,7 +1,9 @@
-import google.auth
-from google.auth.transport.requests import Request
-import httpx
 import os
+
+import google.auth
+import httpx
+from google.auth.transport.requests import Request
+
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "C:/Users/Misha/AppData/Local/hermes/application_default_credentials.json"
 
 credentials, _ = google.auth.default()

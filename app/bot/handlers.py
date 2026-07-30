@@ -3,13 +3,14 @@ import uuid
 
 from aiogram import F, Router, types
 from aiogram.filters import Command, CommandStart
+from arq import create_pool
+from arq.connections import RedisSettings
+from sqlalchemy import select
+
 from app.core.config import settings
 from app.core.normalizer import clean_url, is_valid_url
 from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
-from arq import create_pool
-from arq.connections import RedisSettings
-from sqlalchemy import select
 
 router = Router()
 logger = logging.getLogger(__name__)

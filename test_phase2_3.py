@@ -1,15 +1,11 @@
-import pytest
-import asyncio
-import os
-import sys
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-
-
+import pytest
 
 from app.worker.factcheck import validate_claims
 from app.worker.schemas import Claim, SearchResult
+
 
 @pytest.mark.asyncio
 async def test_secondary_source_refutation():

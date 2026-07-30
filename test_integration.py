@@ -1,25 +1,15 @@
-import pytest
 import asyncio
 import json
 import logging
-import os
-import sys
 from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-
-
-
-
-
-
-
-
-from sqlalchemy import text
+import pytest
 from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import text
 
 from app.db.database import AsyncSessionLocal
-from app.worker.audit import run_post_publish_audit, apply_audit_edit
+from app.worker.audit import apply_audit_edit, run_post_publish_audit
 from app.worker.schemas import SearchResult
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

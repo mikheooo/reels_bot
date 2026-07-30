@@ -1,20 +1,14 @@
-import pytest
-import asyncio
-import sys
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-import os
+import pytest
 
+from app.worker.factcheck import (
+    search_exa_for_claim,
+    validate_claims,
+)
+from app.worker.schemas import Claim
 
-
-
-
-
-
-
-from app.worker.factcheck import extract_claims, search_exa_for_claim, validate_claims, qa_audit
-from app.worker.schemas import Claim, SearchResult, VideoAnalysis
 
 @pytest.mark.asyncio
 async def test_refinements():

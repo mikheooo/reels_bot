@@ -1,22 +1,10 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-import asyncio
-import os
-import sys
-import json
-from unittest.mock import patch, AsyncMock, MagicMock
+from app.worker.audit import apply_audit_edit, run_post_publish_audit
+from app.worker.schemas import SearchResult
 
-
-
-
-
-
-
-
-
-from app.worker.schemas import Claim, SearchResult, VideoAnalysis
-from app.worker.audit import run_post_publish_audit, apply_audit_edit
-from aiogram import Bot
 
 @pytest.mark.asyncio
 async def test_audit_scenarios():

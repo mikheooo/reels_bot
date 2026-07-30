@@ -1,7 +1,7 @@
-import pytest
 from pydantic import ValidationError
-from app.worker.schemas import Claim, VideoAnalysis, QAResult
-import json
+
+from app.worker.schemas import Claim
+
 
 def run_tests():
     # Test 1: Valid Fact Claim

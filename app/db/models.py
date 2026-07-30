@@ -1,6 +1,7 @@
-from app.db.database import Base
 from sqlalchemy import JSON, BigInteger, Column, DateTime, String, Text
 from sqlalchemy.sql import func
+
+from app.db.database import Base
 
 
 class JobStatus:

@@ -1,12 +1,16 @@
 import asyncio
-import json
+
 from dotenv import load_dotenv
 
 # Load real keys from .env
 load_dotenv("C:/Users/Misha/reels_bot/.env")
 
-from app.worker.factcheck import extract_claims, search_exa_for_claim, validate_claims, qa_audit
-from app.worker.schemas import VideoAnalysis
+from app.worker.factcheck import (
+    extract_claims,
+    qa_audit,
+    search_exa_for_claim,
+    validate_claims,
+)
 
 transcript = """
 Привет! Вчера Google выкатили новую модель Gemini 1.5 Pro. 

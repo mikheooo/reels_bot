@@ -1,20 +1,10 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-import asyncio
-import sys
-import json
-from unittest.mock import patch, MagicMock
-
-import os
-
-
-
-
-
-
-
 
 from app.worker.factcheck import qa_audit
-from app.worker.schemas import Claim, VideoAnalysis, SearchResult
+from app.worker.schemas import Claim, SearchResult, VideoAnalysis
+
 
 @pytest.mark.asyncio
 async def test_qa():

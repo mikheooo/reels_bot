@@ -1,4 +1,5 @@
 import os
+
 import pytest
 
 # Устанавливаем фейковые переменные ДО инициализации любых модулей (включая pydantic_settings)

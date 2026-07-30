@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import httpx
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+
 from app.core.config import settings
 from app.worker.factcheck import get_vertex_token, search_exa_for_claim
 from app.worker.schemas import Claim, VideoAnalysis

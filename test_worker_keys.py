@@ -1,18 +1,12 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, patch, MagicMock
-import os
-import sys
+
+from app.core.config import settings
 
 # Fake env for importing tasks
-
-
-
-
-
-
 from app.worker.tasks import process_video
-from app.core.config import settings
+
 
 @pytest.mark.asyncio
 async def test_worker_keys_graceful():

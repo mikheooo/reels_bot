@@ -6,9 +6,10 @@ from datetime import datetime
 
 import google.auth
 import httpx
+from google.auth.transport.requests import Request
+
 from app.core.config import settings
 from app.worker.schemas import Claim, QAResult, SearchResult, VideoAnalysis
-from google.auth.transport.requests import Request
 
 logger = logging.getLogger(__name__)
 

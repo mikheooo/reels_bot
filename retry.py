@@ -1,6 +1,8 @@
 import asyncio
+
 from arq import create_pool
 from arq.connections import RedisSettings
+
 
 async def main():
     redis = await create_pool(RedisSettings(host='localhost', port=6379))

@@ -1,7 +1,6 @@
-import pytest
-import sys
-from app.db.models import Job
 from app.core.config import Settings
+from app.db.models import Job
+
 
 def test_review_required_status():
     """Тест: статус REVIEW_REQUIRED допустим в модели Job"""
