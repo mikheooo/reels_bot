@@ -1,8 +1,9 @@
 import asyncio
 import logging
+
 from aiogram import Bot, Dispatcher
-from app.core.config import settings
 from app.bot.handlers import router
+from app.core.config import settings
 from app.db.database import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

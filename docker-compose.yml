@@ -41,6 +41,7 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
     volumes:
       - ./gcp-key.json:/app/gcp-key.json:ro
+      - C:/Users/Misha/.hermes/plans:/plans
     depends_on:
       postgres:
         condition: service_healthy

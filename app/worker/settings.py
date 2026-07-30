@@ -1,9 +1,10 @@
-import shutil
 import logging
-from arq.connections import RedisSettings
+import shutil
+
 from app.core.config import settings
-from app.worker.tasks import process_video
 from app.db.database import init_db
+from app.worker.tasks import process_video
+from arq.connections import RedisSettings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 

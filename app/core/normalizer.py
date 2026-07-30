@@ -1,6 +1,7 @@
-import re
 import hashlib
+import re
 from urllib.parse import urlparse, urlunparse
+
 
 def clean_url(url: str) -> tuple[str, str]:
     parsed = urlparse(url)
