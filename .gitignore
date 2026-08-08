@@ -4,6 +4,7 @@
 *.key
 *.pem
 twitter_env.sh
+gcp-key.json
 
 # Caches & Envs
 __pycache__/
@@ -11,6 +12,10 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+.ruff_cache/
+graphify-out/
+*.mp4
+temp_prompt.txt
 
 # Logs & Data
 *.log
