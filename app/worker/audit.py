@@ -8,8 +8,8 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from app.core.config import settings
-from app.worker.factcheck import call_gemini_api, search_exa_for_claim
 from app.worker.business_check import format_business_check_markdown
+from app.worker.factcheck import call_gemini_api, search_exa_for_claim
 from app.worker.schemas import Claim, VideoAnalysis
 
 logger = logging.getLogger(__name__)

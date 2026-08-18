@@ -16,15 +16,16 @@ from aiogram.types import FSInputFile
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
+from app.worker.business_check import format_business_check_markdown, run_business_check
 from app.worker.factcheck import (
     extract_claims,
     qa_audit,
     search_exa_for_claim,
     validate_claims,
 )
-from app.worker.business_check import run_business_check, format_business_check_markdown
-from app.worker.structured_analysis import generate_structured_analysis
 from app.worker.schemas import VideoAnalysis
+from app.worker.structured_analysis import generate_structured_analysis
+from app.worker.visual_analysis import extract_visual_evidence
 
 _original_execute = googleapiclient.http.HttpRequest.execute
 
@@ -201,9 +202,8 @@ async def get_raw_transcript(file_path: str, max_rounds: int = 5, base_delay: fl
         k = os.getenv(f"GEMINI_API_KEY_{i}")
         if k:
             keys.append(k.strip())
-    if not keys:
-        if getattr(settings, "gemini_api_key", None):
-            keys.append(settings.gemini_api_key.strip())
+    if not keys and getattr(settings, "gemini_api_key", None):
+        keys.append(settings.gemini_api_key.strip())
         
     last_error = None
     for round_idx in range(1, max_rounds + 1):
@@ -260,12 +260,9 @@ async def get_raw_transcript(file_path: str, max_rounds: int = 5, base_delay: fl
     raise last_error or Exception("All API keys failed in get_raw_transcript")
 
 
-def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> str:
-    parts = []
-    if mechanics_text:
-        parts.append(mechanics_text)
-    
-    parts.append("🔎 **Проверка фактов:**")
+def _format_independent_analysis_layers(analysis: VideoAnalysis) -> str:
+    """Render independent Fact Check and Business Check layers separately."""
+    parts = ["🔎 **НЕЗАВИСИМАЯ ПРОВЕРКА УТВЕРЖДЕНИЙ (FACT CHECK):**"]
     for c in analysis.claims:
         if c.status == "подтверждено":
             parts.append(f"- ✅ [Подтверждено] {c.statement}\n  (Источник: [{c.source_type}] {c.source_url})")
@@ -273,13 +270,36 @@ def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> st
             parts.append(f"- ❌ [Опровергнуто] {c.statement}\n  (Источник: {c.source_url})")
         elif c.status == "не проверено":
             parts.append(f"- 🟡 [Не проверено] {c.statement} ({c.unverified_reason or 'Нет надежных источников'})")
-    
+
     if getattr(analysis, 'business_check', None):
         parts.append(format_business_check_markdown(analysis.business_check))
 
+    return "\n\n".join(parts)
+
+
+def _compose_analysis_output(structured_analysis: str | None, analysis: VideoAnalysis, raw_video_text: str) -> str:
+    """Compose canonical structured output or an explicit legacy fallback."""
+    source_material_text = "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "..."
+    if structured_analysis:
+        return structured_analysis + "\n\n" + _format_independent_analysis_layers(analysis)
+
+    fallback_material = (
+        "⚠️ **STRUCTURED ANALYSIS UNAVAILABLE**\n\n"
+        + source_material_text
+        + "\nRaw transcript is source material, not reconstructed mechanics."
+    )
+    return format_analysis_markdown(analysis, fallback_material)
+
+
+def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> str:
+    parts = []
+    if mechanics_text:
+        parts.append(mechanics_text)
+    parts.append(_format_independent_analysis_layers(analysis))
+
     if analysis.task_description:
         parts.append(f"\nЗАДАЧА:\n{analysis.task_description}")
-        
+
     return "\n\n".join(parts)
 
 def _split_text(text: str, limit: int = 4096) -> list[str]:
@@ -425,9 +445,7 @@ def is_valid_title(title: str) -> bool:
     if len(words) < 3:
         return False
     banned_starts = ["михаил,", "михаил ", "тебе, как", "тебе не нужен", "этот ручной", "видео интересно", "поскольку видео"]
-    if any(t_clean.startswith(b) for b in banned_starts):
-        return False
-    return True
+    return not any(t_clean.startswith(b) for b in banned_starts)
 
 
 def truncate_to_words(title: str, min_words: int = 4, max_words: int = 10) -> str:
@@ -505,7 +523,7 @@ def extract_tasks_from_analysis(analysis: str, url: str = "") -> list[dict]:
         # Check first actionable line
         for line in task_block.splitlines():
             line_str = line.strip()
-            if not line_str or line_str.startswith("---") or line_str.startswith("#"):
+            if not line_str or line_str.startswith(("---", "#")):
                 continue
             cand = clean_title_str(line_str)
             if is_valid_title(cand):
@@ -603,10 +621,13 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         logger.info(f"Extracting raw transcript for {video_path}")
         raw_video_text = await get_raw_transcript(video_path)
 
+        # Extract visual evidence from video frames for structured analysis
+        visual_evidence = await extract_visual_evidence(video_path)
+
         # Restore the Reels Analyzer report contract. The legacy reels_bot
         # formatter below is retained only as a fallback if report generation fails.
         try:
-            structured_analysis = await generate_structured_analysis(raw_video_text)
+            structured_analysis = await generate_structured_analysis(raw_video_text, visual_evidence)
             logger.info("Structured Reels Analyzer report generated.")
         except Exception as structured_err:
             logger.error(f"Structured Reels Analyzer report failed: {structured_err}")
@@ -636,12 +657,9 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         logger.info("Running QA Audit...")
         qa_res = await qa_audit(analysis_obj)
         
-        # Prefer the restored structured report. Keep the legacy formatter as a
-        # safe fallback so a temporary model/API failure does not lose the job.
-        analysis = structured_analysis or format_analysis_markdown(
-            analysis_obj,
-            "📝 **Сырой Транскрипт (Механика):**\n" + raw_video_text[:1000] + "..."
-        )
+        # Structured report is canonical. Independent Fact Check and Business Check
+        # remain separate layers and are appended deterministically.
+        analysis = _compose_analysis_output(structured_analysis, analysis_obj, raw_video_text)
 
         if not qa_res.approved:
             msg = "⚠️ Пост заблокирован QA-контроллером.\nПричины:\n- " + "\n- ".join(qa_res.reasons)
@@ -675,8 +693,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             with open(backlog_file, "a", encoding="utf-8") as bf:
                 if os.path.getsize(backlog_file) == 0 if os.path.exists(backlog_file) else True:
                     bf.write("# База Идей (Backlog)\n\n")
-                for t in extracted_tasks:
-                    bf.write(f"- [ ] [{t['title']}]({plan_file.split('/')[-1]}) - {url}\n")
+                bf.writelines(f"- [ ] [{t['title']}]({plan_file.split('/')[-1]}) - {url}\n" for t in extracted_tasks)
                 
         except Exception as e:
             logger.error(f"Failed to save idea brief to {plan_file}: {e}")
@@ -722,7 +739,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         from datetime import datetime, timedelta
         qa_reasons_data = {
             "analysis_json": analysis_obj.model_dump(),
-            "mechanics_text": "📝 **Сырой Транскрипт (Механика):**\n" + raw_video_text[:1000] + "...",
+            "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
             "audit_history": []
         }
         await update_job_status(job_id, 'DONE', tg_file_id=msg.video.file_id, analysis_text=analysis, qa_reasons=qa_reasons_data, audit_scheduled_at=datetime.utcnow() + timedelta(hours=24))
