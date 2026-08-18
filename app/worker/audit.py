@@ -8,7 +8,8 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from app.core.config import settings
-from app.worker.factcheck import get_vertex_token, search_exa_for_claim
+from app.worker.factcheck import call_gemini_api, search_exa_for_claim
+from app.worker.business_check import format_business_check_markdown
 from app.worker.schemas import Claim, VideoAnalysis
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,9 @@ def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> st
         elif c.status == "не проверено":
             parts.append(f"- 🟡 [Не проверено] {c.statement} ({c.unverified_reason or 'Нет надежных источников'})")
     
+    if getattr(analysis, 'business_check', None):
+        parts.append(format_business_check_markdown(analysis.business_check))
+
     if analysis.task_description:
         parts.append(f"\nЗАДАЧА:\n{analysis.task_description}")
         
@@ -35,11 +39,6 @@ def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> st
 async def check_claim_update(old_claim: Claim, search_results: list) -> dict:
     if not search_results:
         return {"changed": False, "reason": "No search results"}
-
-    token = await get_vertex_token()
-    project_id = "project-77ee3790-ced5-43a7-991"
-    url = f"https://aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     sources_text = "\n".join([f"URL: {s.url}\nТекст: {s.text_snippet[:1500]}" for s in search_results[:3]])
 
@@ -70,11 +69,9 @@ async def check_claim_update(old_claim: Claim, search_results: list) -> dict:
     payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json", "responseSchema": schema}}
 
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = json.loads(resp.json()["candidates"][0]["content"]["parts"][0]["text"])
-            return data
+        resp_json = await call_gemini_api(payload)
+        data = json.loads(resp_json["candidates"][0]["content"]["parts"][0]["text"])
+        return data
     except Exception as e:
         logger.error(f"check_claim_update API error: {e}")
         return {"changed": False, "error": str(e)}

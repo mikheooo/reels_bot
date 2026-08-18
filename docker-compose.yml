@@ -25,6 +25,7 @@ services:
     env_file: .env
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
+      - EXPECTED_BOT_USERNAME=Reeelsanalyzerbot
     volumes:
       - ./gcp-key.json:/app/gcp-key.json:ro
     depends_on:
@@ -39,6 +40,7 @@ services:
     env_file: .env
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
+      - EXPECTED_BOT_USERNAME=Reeelsanalyzerbot
     volumes:
       - ./gcp-key.json:/app/gcp-key.json:ro
       - C:/Users/Misha/.hermes/plans:/plans

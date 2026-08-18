@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     db_url: str
     redis_url: str
     channel_chat_id: str | None = None
+    expected_bot_username: str | None = None
     exa_api_key: str | None = None
     jina_api_key: str | None = None
 

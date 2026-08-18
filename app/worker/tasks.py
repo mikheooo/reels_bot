@@ -1,7 +1,10 @@
 import asyncio
 import logging
 import os
+import random
+import re
 import shutil
+import time
 import uuid
 
 import google.generativeai as genai
@@ -19,6 +22,8 @@ from app.worker.factcheck import (
     search_exa_for_claim,
     validate_claims,
 )
+from app.worker.business_check import run_business_check, format_business_check_markdown
+from app.worker.structured_analysis import generate_structured_analysis
 from app.worker.schemas import VideoAnalysis
 
 _original_execute = googleapiclient.http.HttpRequest.execute
@@ -189,52 +194,70 @@ async def downscale_video(input_path: str) -> str:
 
 
 
-async def get_raw_transcript(file_path: str) -> str:
+async def get_raw_transcript(file_path: str, max_rounds: int = 5, base_delay: float = 3.0, cap_delay: float = 60.0) -> str:
+    """Extract raw transcript and visual descriptions with multi-round Gemini key rotation, 429/quota retry with exponential backoff."""
     keys = []
     for i in range(1, 10):
         k = os.getenv(f"GEMINI_API_KEY_{i}")
-        if k: keys.append(k)
+        if k:
+            keys.append(k.strip())
     if not keys:
-        keys.append(settings.gemini_api_key)
+        if getattr(settings, "gemini_api_key", None):
+            keys.append(settings.gemini_api_key.strip())
         
     last_error = None
-    for key in keys:
-        genai.configure(api_key=key, transport="rest")
-        logger.info(f"Trying Gemini API key ending in ...{key[-4:] if key else 'None'}")
-        
-        try:
-            def _upload_and_analyze():
-                return genai.upload_file(path=file_path)
-
-            video_file = await asyncio.to_thread(_upload_and_analyze)
+    for round_idx in range(1, max_rounds + 1):
+        for key in keys:
+            genai.configure(api_key=key, transport="rest")
+            logger.info(f"Trying Gemini API key ending in ...{key[-4:] if key else 'None'} (Round {round_idx}/{max_rounds})")
             
-            while video_file.state.name == "PROCESSING":
-                await asyncio.sleep(3)
-                video_file = await asyncio.to_thread(genai.get_file, video_file.name)
-                
-            if video_file.state.name == "FAILED":
-                err_detail = getattr(video_file, 'error', None)
-                raise Exception(f"Gemini video processing failed: {err_detail}")
-                
-            def _generate():
-                flash_model = genai.GenerativeModel(model_name="gemini-3.6-flash")
-                extraction_prompt = "Сделай полную подробную транскрипцию всего, что говорят в этом видео. Также детально опиши всё, что происходит на экране."
-                extraction_response = flash_model.generate_content([video_file, extraction_prompt])
-                return extraction_response.text
+            video_file = None
+            try:
+                def _upload_and_analyze():
+                    return genai.upload_file(path=file_path)
 
-            result = await asyncio.to_thread(_generate)
-            await asyncio.to_thread(genai.delete_file, video_file.name)
-            return result
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "429" in error_msg or "quota" in error_msg or "exhausted" in error_msg:
-                last_error = e
-                continue
-            else:
-                raise e
+                video_file = await asyncio.to_thread(_upload_and_analyze)
                 
-    raise last_error or Exception("All API keys failed")
+                while video_file.state.name == "PROCESSING":
+                    await asyncio.sleep(3)
+                    video_file = await asyncio.to_thread(genai.get_file, video_file.name)
+                    
+                if video_file.state.name == "FAILED":
+                    err_detail = getattr(video_file, 'error', None)
+                    raise Exception(f"Gemini video processing failed: {err_detail}")
+                    
+                def _generate():
+                    flash_model = genai.GenerativeModel(model_name="gemini-3.7-flash")
+                    extraction_prompt = "Сделай полную подробную транскрипцию всего, что говорят в этом видео. Также детально опиши всё, что происходит на экране."
+                    extraction_response = flash_model.generate_content([video_file, extraction_prompt])
+                    return extraction_response.text
+
+                result = await asyncio.to_thread(_generate)
+                return result
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                if any(err_kw in error_msg for err_kw in ("429", "quota", "exhausted", "503", "high demand", "unavailable", "rate limit")):
+                    logger.warning(f"Gemini API key (...{key[-4:] if key else 'None'}) rate limited / busy: {e}. Rotating...")
+                    last_error = e
+                    continue
+                else:
+                    raise e
+            finally:
+                if video_file is not None:
+                    try:
+                        await asyncio.to_thread(genai.delete_file, video_file.name)
+                    except Exception as del_err:
+                        logger.debug(f"Failed to delete uploaded video file {getattr(video_file, 'name', 'unknown')}: {del_err}")
+
+        # If all keys were rate-limited in this round
+        if round_idx < max_rounds:
+            temp = min(cap_delay, base_delay * (2 ** (round_idx - 1)))
+            wait_time = random.uniform(temp * 0.5, temp)
+            logger.warning(f"All Gemini API keys rate limited/busy in get_raw_transcript. Sleeping {wait_time:.2f}s before retry round {round_idx + 1}/{max_rounds}...")
+            await asyncio.sleep(wait_time)
+
+    raise last_error or Exception("All API keys failed in get_raw_transcript")
 
 
 def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> str:
@@ -251,6 +274,9 @@ def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> st
         elif c.status == "не проверено":
             parts.append(f"- 🟡 [Не проверено] {c.statement} ({c.unverified_reason or 'Нет надежных источников'})")
     
+    if getattr(analysis, 'business_check', None):
+        parts.append(format_business_check_markdown(analysis.business_check))
+
     if analysis.task_description:
         parts.append(f"\nЗАДАЧА:\n{analysis.task_description}")
         
@@ -292,67 +318,245 @@ def _extract_summary(analysis: str) -> str:
     return first.strip('-').strip()
 
 
+GENERIC_TITLES = {
+    "идея из видео", "идея из видео (reels)", "идея из текста", "idea from video", "reel idea", "новая задача",
+    "разбор видео", "видео разбор", "задача из рилз", "идея", "задача", "видео", "анализ видео"
+}
+
+
+def clean_title_str(t: str) -> str:
+    if not t:
+        return ""
+    t = re.sub(r"^[#\*\-\s\d\.\:\(\)\[\]]+", "", t).strip()
+    
+    prefixes = [
+        r"^идея\s+из\s+видео\s*[:\-–—]?",
+        r"^идея\s+из\s+текста\s*[:\-–—]?",
+        r"^idea\s+brief\s*[:\-–—]?",
+        r"^idea\s+from\s+video\s*[:\-–—]?",
+        r"^reel\s+idea\s*[:\-–—]?",
+        r"^новая\s+задача\s*[:\-–—]?",
+        r"^задача\s+для\s+михаила\s*[:\-–—\(\)]*",
+        r"^задача\s*[:\-–—]?",
+        r"^концепция\s*[:\-–—]?",
+        r"^концепт\s*[:\-–—]?",
+        r"^дельта\s+механики\s*[:\-–—]?",
+        r"^разбор\s+видео\s*[:\-–—]?",
+        r"^разбор\s*[:\-–—]?",
+        r"^обзор\s*[:\-–—]?",
+        r"^суть\s*[:\-–—]?",
+        r"^цель\s*[:\-–—]?",
+        r"^идея\s*[:\-–—]?",
+        r"^как\s+применить\s*[:\-–—\(\)]*",
+        r"^как\s+михаил\s+может\s+это\s+применить\s*[:\-–—\(\)]*",
+        r"^применение\s+в\s+стеке\s*[:\-–—\(\)]*",
+        r"^применение\s+в\s+работе\s+и\s+жизни\s*[:\-–—\(\)]*",
+        r"^применение\s+в\s+работе\s*[:\-–—\(\)]*",
+        r"^применение\s+и\s+интеграция\s*[:\-–—\(\)]*",
+        r"^применение\s+идеи\s*[:\-–—\(\)]*",
+        r"^применение\s*[:\-–—\(\)]*",
+        r"^интеграция\s+в\s+стек\s*[:\-–—\(\)]*",
+        r"^чистый\s+концентрат\s+для\s+инженера\s*[:\-–—\(\)]*",
+        r"^белая\s+авто-система\s+ревью\s+фильмов\s*[:\-–—\(\)]*",
+        r"^видео\s+демонстрирует\s+(?:три|3|две|2|четыре|4|пять|5)?\s*",
+        r"^видео\s+показывает\s+",
+        r"^видео\s+разбирает\s+",
+        r"^автор\s+демонстрирует\s+",
+        r"^автор\s+показывает\s+",
+        r"^автор\s+презентует\s+",
+        r"^автор\s+делится\s+",
+        r"^автор\s+видео\s+развенчивает\s+миф\s+[^,]+,\s*(?:предлагая\s+)?",
+        r"^схема\s+описывает\s+",
+        r"^в\s+видео\s+демонстрируется\s+",
+        r"^в\s+видео\s+показывается\s+",
+        r"^в\s+видео\s+представлен\s+разбор\s+",
+        r"^разбор\s+репозитория-агрегатора\s*\(?",
+        r"^разбор\s+одного\s+из\s+лучших\s+github-репозиториев\s*",
+        r"^разбор\s+классической\s+инфобизнесовой\s+воронки\s*[:\-]?\s*",
+        r"^разбор\s+классического\s+эстетического\s+лайфстайл-видео\s*\(?[^\)]*\)?\s*,?\s*",
+        r"^разбор\s+",
+        r"^обзор\s+",
+        r"^способ\s+",
+        r"^пошаговая\s+методология\s+",
+        r"^пошаговый\s+сборка\s+",
+        r"^пошаговая\s+сборка\s+",
+        r"^михаил,\s+эти\s+три\s+концепта\s+идеально\s+ложатся\s+на\s+твои\s+рабочие\s+процессы\s*[^:]*:\s*",
+        r"^михаил,\s+тебе\s+не\s+нужно\s+[^.]*\.\s*(?:твоя\s+ценность\s*—\s*)?",
+        r"^михаил,\s+для\s+тебя\s+это\s+[^,]*,\s*а\s*",
+        r"^михаил,\s+не\s+трать\s+время\s+[^.]*\.\s*(?:но\s+сам\s+)?",
+        r"^михаил\s+может\s+превратить\s+эту\s+ручную\s+рутину\s+из\s+видео\s+в\s*",
+        r"^этот\s+ручной\s+процесс\s*—\s*идеальный\s+кандидат\s+на\s*",
+        r"^тебе,\s*как\s+[^.]*,\s*",
+        r"^тебе\s+не\s+нужен\s+[^.]*\.\s*",
+    ]
+    
+    changed = True
+    while changed:
+        changed = False
+        for p in prefixes:
+            new_t = re.sub(p, "", t, flags=re.IGNORECASE).strip()
+            if new_t != t:
+                t = new_t
+                changed = True
+                t = re.sub(r"^[\*\-\s\d\.\:\(\)\[\]\"'«»—–]+", "", t).strip()
+
+    t = t.replace("**", "").replace("*", "").replace("`", "").replace("«", "").replace("»", "").replace('"', '').strip()
+    t = re.sub(r"^\((?:как\s+)?михаил\s+может\s+это\s+применить\)", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"^\((?:применение\s+в\s+работе|применение\s+в\s+стеке|применение|интеграция\s+в\s+стек|применение\s+идеи)\)", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"^[\:\-\–—\s]+", "", t).strip()
+    t = re.sub(r"https?://\S+", "", t).strip()
+    t = t.rstrip(" :.-")
+    
+    if t:
+        t = t[0].upper() + t[1:]
+        
+    return t
+
+
+def is_valid_title(title: str) -> bool:
+    if not title:
+        return False
+    t_clean = title.lower().strip()
+    if t_clean in GENERIC_TITLES:
+        return False
+    if len(t_clean) < 8:
+        return False
+    words = title.split()
+    if len(words) < 3:
+        return False
+    banned_starts = ["михаил,", "михаил ", "тебе, как", "тебе не нужен", "этот ручной", "видео интересно", "поскольку видео"]
+    if any(t_clean.startswith(b) for b in banned_starts):
+        return False
+    return True
+
+
+def truncate_to_words(title: str, min_words: int = 4, max_words: int = 10) -> str:
+    words = title.split()
+    if len(words) <= max_words:
+        return title
+    
+    for sep in [":", " — ", " – ", " - ", ",", ";", "."]:
+        idx = title.find(sep)
+        if idx > 15:
+            cand = title[:idx].strip()
+            if min_words <= len(cand.split()) <= max_words:
+                return cand.rstrip(" ,.-")
+                
+    return " ".join(words[:max_words]).rstrip(" ,.-")
+
+
+def extract_tasks_from_analysis(analysis: str, url: str = "") -> list[dict]:
+    """Parse analysis and return list of actionable tasks with concise, meaningful titles (4-10 words)."""
+    # 1. Check if multiple explicit ЗАДАЧА blocks exist
+    z_matches = list(re.finditer(r"(?:^|\n)(?:ЗАДАЧА(?:\s+\d+)?|###\s*6(?:\.\d+)?\.?\s*ЗАДАЧА.*?):\s*", analysis, re.IGNORECASE))
+    
+    if len(z_matches) > 1:
+        tasks = []
+        for i, match in enumerate(z_matches):
+            start = match.end()
+            end = z_matches[i + 1].start() if i + 1 < len(z_matches) else len(analysis)
+            section_text = analysis[start:end].strip()
+            first_line = section_text.splitlines()[0].strip() if section_text.splitlines() else ""
+            title = clean_title_str(first_line)
+            if not is_valid_title(title):
+                title = clean_title_str(section_text[:120])
+            title = truncate_to_words(title)
+            tasks.append({
+                "title": title,
+                "description": section_text,
+                "source_type": "reel",
+                "source_url": url
+            })
+        return tasks
+
+    # 2. Check Section 6
+    m_task = re.search(r"(?:###\s*6\.?\s*ЗАДАЧА[^\n]*\n|ЗАДАЧА:[^\n]*\n)(.*?)(?=(?:\n###\s+[0-9]|\n---\s*\n###|\Z))", analysis, re.DOTALL | re.IGNORECASE)
+    if m_task:
+        task_block = m_task.group(1).strip()
+        # Look for explicit Concept / Idea line
+        m_c = re.search(r"(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?(?:концепция|концепт|идея)(?:\*\*)?\s*[:\*\#\s]*([^\n]+)", task_block, re.IGNORECASE)
+        if m_c:
+            cand = clean_title_str(m_c.group(1))
+            if is_valid_title(cand):
+                return [{
+                    "title": truncate_to_words(cand),
+                    "description": task_block,
+                    "source_type": "reel",
+                    "source_url": url
+                }]
+
+        # Look for numbered sub-tasks that represent distinct skills/tools
+        numbered_items = list(re.finditer(r"(?:^|\n)\s*(\d+)\.\s+\*\*([^\*]+)\*\*(.*?)(?=(?:\n\s*\d+\.\s+\*\*|\n####|\n---|\Z))", task_block, re.DOTALL))
+        if len(numbered_items) >= 2:
+            sub_titles = [clean_title_str(m.group(2)) for m in numbered_items]
+            if all(is_valid_title(st) for st in sub_titles):
+                tasks = []
+                for m in numbered_items:
+                    t_title = truncate_to_words(clean_title_str(m.group(2)))
+                    t_desc = m.group(0).strip()
+                    tasks.append({
+                        "title": t_title,
+                        "description": t_desc,
+                        "source_type": "reel",
+                        "source_url": url
+                    })
+                return tasks
+                
+        # Check first actionable line
+        for line in task_block.splitlines():
+            line_str = line.strip()
+            if not line_str or line_str.startswith("---") or line_str.startswith("#"):
+                continue
+            cand = clean_title_str(line_str)
+            if is_valid_title(cand):
+                return [{
+                    "title": truncate_to_words(cand),
+                    "description": task_block,
+                    "source_type": "reel",
+                    "source_url": url
+                }]
+
+    # 3. Look for Summary (КРАТКО ДЛЯ КАНАЛА:)
+    m_sum = re.search(r"(?:КРАТКО|СУТЬ|ОПИСАНИЕ)(?:\s*ДЛЯ\s*КАНАЛА)?\s*\*?\*?:\s*\*?\*?\s*(.*?)(?:\n\n|\n#|\n---)", analysis, re.DOTALL | re.IGNORECASE)
+    if m_sum:
+        sum_text = m_sum.group(1).strip().replace("\n", " ")
+        first_sent = re.split(r"[\.\!\?]\s+", sum_text)[0].strip()
+        cand = clean_title_str(first_sent)
+        if is_valid_title(cand):
+            return [{
+                "title": truncate_to_words(cand),
+                "description": analysis,
+                "source_type": "reel",
+                "source_url": url
+            }]
+
+    # 4. Look for Section 1 (О ЧЁМ ВИДЕО)
+    m_about = re.search(r"###\s*1\.?\s*О\s*ЧЁМ\s*ВИДЕО[^\n]*\n(.*?)(?:\n###|\Z)", analysis, re.DOTALL | re.IGNORECASE)
+    if m_about:
+        about_text = m_about.group(1).strip()
+        m_idea = re.search(r"(?:Идея\s*/\s*Концепция|Концепция|Проблема\s*/\s*Возможность|Содержание)\s*[:\*\#]*\s*([^\n\*\#]+)", about_text, re.IGNORECASE)
+        if m_idea:
+            cand = clean_title_str(m_idea.group(1))
+            if is_valid_title(cand):
+                return [{
+                    "title": truncate_to_words(cand),
+                    "description": analysis,
+                    "source_type": "reel",
+                    "source_url": url
+                }]
+
+    return [{
+        "title": "Интеграция решения из видео",
+        "description": analysis,
+        "source_type": "reel",
+        "source_url": url
+    }]
+
+
 def _extract_task(analysis: str) -> dict | None:
-    """Parse ЗАДАЧА block from analysis. Returns {title, goal, uses, adds, steps, criteria} or None."""
-    # Ищем блок ЗАДАЧА
-    task_start = analysis.find('ЗАДАЧА:')
-    if task_start == -1:
-        return None
-
-    task_block = analysis[task_start:]
-
-    # Обрезаем хвост после КРИТЕРИИ ГОТОВНОСТИ
-    crit_start = task_block.find('КРИТЕРИИ ГОТОВНОСТИ:')
-    if crit_start != -1:
-        # Найдём конец списка критериев (два переноса строки после начала)
-        after_crit = task_block[crit_start:]
-        # Ищем конец — либо конец текста, либо разделитель типа "Почему реализация"
-        end_markers = ['\n\n**Почему', '\n\nПочему реализация', '\n\n---', '\n\n###']
-        cut = len(task_block)
-        for em in end_markers:
-            idx = task_block.find(em, crit_start)
-            if idx != -1 and idx < cut:
-                cut = idx
-        task_block = task_block[:cut]
-
-    result = {}
-    # ЗАДАЧА: [название]
-    title_match = task_block.find('ЗАДАЧА:')
-    if title_match != -1:
-        after = task_block[title_match + len('ЗАДАЧА:'):].lstrip()
-        end = after.find('\n')
-        if end != -1:
-            result['title'] = after[:end].strip('[]*\n ').strip()
-        else:
-            result['title'] = after.strip('[]*\n ').strip()
-
-    # ЦЕЛЬ:
-    for field, label in [('goal', 'ЦЕЛЬ:'), ('uses', 'ИСПОЛЬЗУЕТ:'), ('adds', 'ДОБАВИТЬ:'), ('steps', 'ШАГИ:'), ('criteria', 'КРИТЕРИИ ГОТОВНОСТИ:')]:
-        idx = task_block.find(label)
-        if idx != -1:
-            after = task_block[idx + len(label):].lstrip()
-            # Конец поля — следующая метка или конец блока
-            next_labels = ['ЦЕЛЬ:', 'ИСПОЛЬЗУЕТ:', 'ДОБАВИТЬ:', 'ШАГИ:', 'КРИТЕРИИ ГОТОВНОСТИ:']
-            end = len(after)
-            for nl in next_labels:
-                ni = after.find(nl)
-                if ni != -1 and ni < end:
-                    end = ni
-            result[field] = after[:end].strip()
-
-    if not result.get('title'):
-        return None
-
-    desc_parts = []
-    if result.get('goal'):
-        desc_parts.append(f"🎯 {result['goal']}")
-    if result.get('steps'):
-        desc_parts.append(f"📋 {result['steps']}")
-
-    return {
-        'title': result['title'],
-        'description': '\n\n'.join(desc_parts) if desc_parts else None,
-    }
+    """Backward-compatible helper returning single task or None."""
+    tasks = extract_tasks_from_analysis(analysis)
+    return tasks[0] if tasks else None
 
 
 async def send_long_text(bot: Bot, chat_id: int, text: str):
@@ -398,6 +602,15 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         
         logger.info(f"Extracting raw transcript for {video_path}")
         raw_video_text = await get_raw_transcript(video_path)
+
+        # Restore the Reels Analyzer report contract. The legacy reels_bot
+        # formatter below is retained only as a fallback if report generation fails.
+        try:
+            structured_analysis = await generate_structured_analysis(raw_video_text)
+            logger.info("Structured Reels Analyzer report generated.")
+        except Exception as structured_err:
+            logger.error(f"Structured Reels Analyzer report failed: {structured_err}")
+            structured_analysis = None
         
         logger.info("Executing Phase 2 Pipeline...")
         claims = await extract_claims(raw_video_text)
@@ -409,13 +622,26 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         logger.info("Validating claims...")
         analysis_obj = await validate_claims(claims, search_data)
         
+        logger.info("Executing Business Check...")
+        try:
+            bc_res = await run_business_check(
+                transcript=raw_video_text,
+                claims=claims,
+                factcheck_analysis=analysis_obj
+            )
+            analysis_obj.business_check = bc_res
+        except Exception as bc_err:
+            logger.error(f"Business Check failed (non-blocking): {bc_err}")
+
         logger.info("Running QA Audit...")
         qa_res = await qa_audit(analysis_obj)
         
-        # Format the final text
-        # Since mechanics is not part of validate_claims anymore, we just use the raw output or a basic summary
-        # For this integration, I'll pass raw text as mechanics for now so it's not empty
-        analysis = format_analysis_markdown(analysis_obj, "📝 **Сырой Транскрипт (Механика):**\n" + raw_video_text[:1000] + "...")
+        # Prefer the restored structured report. Keep the legacy formatter as a
+        # safe fallback so a temporary model/API failure does not lose the job.
+        analysis = structured_analysis or format_analysis_markdown(
+            analysis_obj,
+            "📝 **Сырой Транскрипт (Механика):**\n" + raw_video_text[:1000] + "..."
+        )
 
         if not qa_res.approved:
             msg = "⚠️ Пост заблокирован QA-контроллером.\nПричины:\n- " + "\n- ".join(qa_res.reasons)
@@ -432,20 +658,25 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             return
 
 
+        # Извлекаем задачи из анализа с содержательными заголовками
+        extracted_tasks = extract_tasks_from_analysis(analysis, url=url)
+        primary_title = extracted_tasks[0]['title'] if extracted_tasks else 'Интеграция решения из видео'
+
         # Сохраняем разбор видео в Hermes plans (чистый бриф для архитектора)
         plan_file = f"/plans/idea_{job_id}.md"
         try:
             with open(plan_file, "w", encoding="utf-8") as f:
-                f.write(f"# Идея из видео: {url}\n\n")
+                f.write(f"# {primary_title}\n\n")
                 f.write(analysis)
-            logger.info(f"Video idea brief saved to {plan_file}")
+            logger.info(f"Video idea brief saved to {plan_file} with title: {primary_title}")
             
             # Добавляем в общий список (Backlog)
             backlog_file = "/plans/BACKLOG.md"
             with open(backlog_file, "a", encoding="utf-8") as bf:
                 if os.path.getsize(backlog_file) == 0 if os.path.exists(backlog_file) else True:
                     bf.write("# База Идей (Backlog)\n\n")
-                bf.write(f"- [ ] [Идея из видео (Reels)]({plan_file.split('/')[-1]}) - {url}\n")
+                for t in extracted_tasks:
+                    bf.write(f"- [ ] [{t['title']}]({plan_file.split('/')[-1]}) - {url}\n")
                 
         except Exception as e:
             logger.error(f"Failed to save idea brief to {plan_file}: {e}")
@@ -496,24 +727,24 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         }
         await update_job_status(job_id, 'DONE', tg_file_id=msg.video.file_id, analysis_text=analysis, qa_reasons=qa_reasons_data, audit_scheduled_at=datetime.utcnow() + timedelta(hours=24))
 
-        # Извлекаем и сохраняем задачу
+        # Сохраняем задачи в базу данных (PostgreSQL)
         try:
-            task_data = _extract_task(analysis)
-            if task_data:
+            if extracted_tasks:
                 async with AsyncSessionLocal() as session:
-                    new_task = Task(
-                        id=str(uuid.uuid4()),
-                        job_id=job_id,
-                        user_id=user_id,
-                        title=task_data['title'],
-                        description=task_data.get('description'),
-                        status='PENDING',
-                    )
-                    session.add(new_task)
+                    for t in extracted_tasks:
+                        new_task = Task(
+                            id=str(uuid.uuid4()),
+                            job_id=job_id,
+                            user_id=user_id,
+                            title=t['title'],
+                            description=t.get('description'),
+                            status='PENDING',
+                        )
+                        session.add(new_task)
                     await session.commit()
-                logger.info(f"Task saved: {task_data['title']}")
+                logger.info(f"Tasks saved to DB: {[t['title'] for t in extracted_tasks]}")
         except Exception as e:
-            logger.error(f"Failed to save task: {e}")
+            logger.error(f"Failed to save task to DB: {e}")
 
         logger.info(f"Job {job_id} completed successfully.")
         
