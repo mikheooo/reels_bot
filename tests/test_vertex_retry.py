@@ -1,12 +1,13 @@
 
-import pytest
-import respx
-import httpx
 import asyncio
 import time
-from unittest.mock import patch, AsyncMock
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import formatdate
+from unittest.mock import AsyncMock, patch
+
+import httpx
+import pytest
+import respx
 
 from app.worker.factcheck import post_vertex_with_retry
 

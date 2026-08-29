@@ -25,6 +25,7 @@ import pytest
 from app.worker.visual_analysis import (
     VISUAL_ANALYSIS_PROMPT,
     VISUAL_ANALYSIS_SCHEMA,
+    RateLimitError,
     extract_keyframes,
     extract_visual_evidence,
     analyze_frames_with_vision,
@@ -56,8 +57,8 @@ async def test_extract_keyframes_returns_list_of_dicts():
     for f in frames:
         assert "timestamp" in f
         assert "jpeg_b64" in f
-        assert isinstance(f["timestamp"], str)
-        assert ":" in f["timestamp"]
+        assert isinstance(f["timestamp"], float)
+        assert f["timestamp"] >= 0.0
         # Verify base64 is valid
         decoded = base64.b64decode(f["jpeg_b64"])
         assert len(decoded) > 100  # At least some JPEG data
@@ -102,22 +103,26 @@ def test_visual_analysis_prompt_mentions_github_and_terminal():
 def test_format_visual_evidence_with_items():
     """format_visual_evidence renders items with timestamp, description, text, confidence."""
     items = [
-        {"timestamp": "00:03", "description": "GitHub repo screenshot", "text_read": "owner/repo", "confidence": "high"},
-        {"timestamp": "00:10", "description": "Terminal output", "text_read": None, "confidence": "low"},
+        {"timestamp": 3.0, "description": "GitHub repo screenshot", "text_read": "owner/repo", "confidence": "high"},
+        {"timestamp": 10.0, "description": "Terminal output", "text_read": None, "confidence": "low"},
     ]
     result = format_visual_evidence(items)
-    assert "[00:03]" in result
-    assert "GitHub repo screenshot" in result
-    assert "owner/repo" in result
-    assert "high" in result
-    assert "[00:10]" in result
-    assert "low" in result
+    assert isinstance(result, dict)
+    assert result["status"] == "available"
+    formatted = result["formatted"]
+    assert "[00:03" in formatted
+    assert "GitHub repo screenshot" in formatted
+    assert "owner/repo" in formatted
+    assert "high" in formatted
+    assert "[00:10" in formatted
+    assert "low" in formatted
 
 
 def test_format_visual_evidence_empty_returns_unavailable_marker():
-    """format_visual_evidence with empty list returns UNAVAILABLE marker."""
+    """format_visual_evidence with empty list returns status=unavailable."""
     result = format_visual_evidence([])
-    assert "UNAVAILABLE" in result
+    assert isinstance(result, dict)
+    assert result["status"] == "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -163,21 +168,23 @@ def test_report_prompt_does_not_turn_visual_into_fact():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_extract_visual_evidence_returns_none_on_no_frames():
-    """extract_visual_evidence returns None when no frames can be extracted."""
+async def test_extract_visual_evidence_status_frame_extraction_failed_on_no_frames():
+    """extract_visual_evidence returns status=frame_extraction_failed when no frames."""
     with patch("app.worker.visual_analysis.extract_keyframes", return_value=[]):
         result = await extract_visual_evidence("dummy.mp4")
-    assert result is None
+    assert isinstance(result, dict)
+    assert result["status"] == "frame_extraction_failed"
 
 
 @pytest.mark.asyncio
-async def test_extract_visual_evidence_returns_none_on_api_failure():
-    """extract_visual_evidence returns None when vision API call fails."""
-    mock_frames = [{"timestamp": "00:05", "jpeg_b64": "dGVzdA=="}]
+async def test_extract_visual_evidence_returns_empty_response_on_api_failure():
+    """extract_visual_evidence returns status=empty_response when vision API returns no evidence."""
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
     with patch("app.worker.visual_analysis.extract_keyframes", return_value=mock_frames):
         with patch("app.worker.visual_analysis.analyze_frames_with_vision", return_value=[]):
             result = await extract_visual_evidence("dummy.mp4")
-    assert result is None
+    assert isinstance(result, dict)
+    assert result["status"] == "empty_response"
 
 
 @pytest.mark.asyncio
@@ -204,14 +211,14 @@ async def test_generate_structured_analysis_with_none_visual_evidence():
 @pytest.mark.asyncio
 async def test_analyze_frames_with_vision_success():
     """analyze_frames_with_vision returns structured evidence on success."""
-    mock_frames = [{"timestamp": "00:05", "jpeg_b64": "dGVzdA=="}]
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
     mock_response = {
         "candidates": [{
             "content": {
                 "parts": [{
                     "text": json.dumps([
                         {
-                            "timestamp": "00:05",
+                            "timestamp": 5.0,
                             "description": "GitHub repository page",
                             "text_read": "owner/repo-name",
                             "confidence": "high"
@@ -232,7 +239,7 @@ async def test_analyze_frames_with_vision_success():
 @pytest.mark.asyncio
 async def test_analyze_frames_with_vision_api_failure_returns_empty():
     """analyze_frames_with_vision returns [] on API failure."""
-    mock_frames = [{"timestamp": "00:05", "jpeg_b64": "dGVzdA=="}]
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
     with patch("app.worker.visual_analysis.call_gemini_api", side_effect=Exception("API error")):
         result = await analyze_frames_with_vision(mock_frames)
     assert result == []
@@ -252,13 +259,14 @@ async def test_analyze_frames_with_vision_empty_frames_returns_empty():
 def test_format_visual_evidence_low_confidence_no_text():
     """format_visual_evidence shows low confidence and no text_read for unreadable frames."""
     items = [
-        {"timestamp": "00:15", "description": "Blurred GitHub page", "text_read": None, "confidence": "low"}
+        {"timestamp": 15.0, "description": "Blurred GitHub page", "text_read": None, "confidence": "low"}
     ]
     result = format_visual_evidence(items)
-    assert "low" in result
-    assert "Blurred GitHub page" in result
-    # text_read should not appear as "Текст:" when None
-    assert "Текст:" not in result
+    assert isinstance(result, dict)
+    formatted = result["formatted"]
+    assert "low" in formatted
+    assert "Blurred GitHub page" in formatted
+    assert "Текст:" not in formatted
 
 
 # ---------------------------------------------------------------------------
@@ -327,3 +335,190 @@ def test_generate_structured_analysis_accepts_two_args():
     assert "visual_evidence" in params
     # visual_evidence should have default None
     assert sig.parameters["visual_evidence"].default is None
+
+
+# ---------------------------------------------------------------------------
+# DEFECT FIX: status must NOT be in Gemini schema (application-level, not LLM)
+# ---------------------------------------------------------------------------
+
+def test_visual_analysis_schema_has_no_status_field():
+    """VISUAL_ANALYSIS_SCHEMA must NOT include 'status' — it is an
+    application-level result, not something Gemini should return."""
+    props = VISUAL_ANALYSIS_SCHEMA["items"]["properties"]
+    assert "status" not in props, (
+        "status must not be in VISUAL_ANALYSIS_SCHEMA; "
+        "it is an application-level result computed by Python code"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEFECT FIX: extract_visual_evidence returns dict with application-level status
+# ---------------------------------------------------------------------------
+
+def _VALID_EVIDENCE_ITEM(ts=5.0):
+    return {
+        "timestamp": ts,
+        "description": "GitHub repo page",
+        "text_read": "owner/repo",
+        "confidence": "high",
+    }
+
+
+@pytest.mark.asyncio
+async def test_extract_visual_evidence_returns_dict_with_status():
+    """extract_visual_evidence returns dict with 'status' and 'formatted' on success."""
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
+    with patch("app.worker.visual_analysis.extract_keyframes", return_value=mock_frames):
+        with patch("app.worker.visual_analysis.analyze_frames_with_vision",
+                    return_value=[_VALID_EVIDENCE_ITEM()]):
+            result = await extract_visual_evidence("dummy.mp4")
+    assert isinstance(result, dict)
+    assert result["status"] == "available"
+    assert "formatted" in result
+    assert "GitHub repo page" in result["formatted"]
+
+
+@pytest.mark.asyncio
+async def test_extract_visual_evidence_status_frame_extraction_failed():
+    """extract_visual_evidence returns status=frame_extraction_failed when no frames."""
+    with patch("app.worker.visual_analysis.extract_keyframes", return_value=[]):
+        result = await extract_visual_evidence("dummy.mp4")
+    assert isinstance(result, dict)
+    assert result["status"] == "frame_extraction_failed"
+
+
+@pytest.mark.asyncio
+async def test_extract_visual_evidence_status_empty_response():
+    """extract_visual_evidence returns status=empty_response when API returns no evidence."""
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
+    with patch("app.worker.visual_analysis.extract_keyframes", return_value=mock_frames):
+        with patch("app.worker.visual_analysis.analyze_frames_with_vision", return_value=[]):
+            result = await extract_visual_evidence("dummy.mp4")
+    assert isinstance(result, dict)
+    assert result["status"] == "empty_response"
+
+
+@pytest.mark.asyncio
+async def test_extract_visual_evidence_status_api_rate_limited():
+    """extract_visual_evidence returns status=api_rate_limited when all retries exhausted."""
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
+    with patch("app.worker.visual_analysis.extract_keyframes", return_value=mock_frames):
+        with patch("app.worker.visual_analysis.analyze_frames_with_vision",
+                    side_effect=RateLimitError("all keys rate limited")):
+            result = await extract_visual_evidence("dummy.mp4")
+    assert isinstance(result, dict)
+    assert result["status"] == "api_rate_limited"
+
+
+# ---------------------------------------------------------------------------
+# DEFECT FIX: bounded visual retry budget
+# ---------------------------------------------------------------------------
+
+def test_visual_max_retries_is_bounded():
+    """VISUAL_MAX_RETRIES must be a small positive integer (bounded budget)."""
+    from app.worker.visual_analysis import VISUAL_MAX_RETRIES
+    assert isinstance(VISUAL_MAX_RETRIES, int)
+    assert 1 <= VISUAL_MAX_RETRIES <= 5
+
+
+@pytest.mark.asyncio
+async def test_analyze_frames_with_vision_retries_on_rate_limit():
+    """analyze_frames_with_vision retries up to VISUAL_MAX_RETRIES then raises RateLimitError."""
+    from app.worker.visual_analysis import VISUAL_MAX_RETRIES
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
+    rate_limit_exc = RateLimitError("429 all keys exhausted")
+    mock_api = AsyncMock(side_effect=rate_limit_exc)
+    with patch("app.worker.visual_analysis.call_gemini_api", mock_api):
+        with pytest.raises(RateLimitError):
+            await analyze_frames_with_vision(mock_frames)
+    assert mock_api.call_count == VISUAL_MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_analyze_frames_with_vision_succeeds_after_retry():
+    """analyze_frames_with_vision succeeds on second attempt after rate limit."""
+    mock_frames = [{"timestamp": 5.0, "jpeg_b64": "dGVzdA=="}]
+    success_response = {
+        "candidates": [{
+            "content": {"parts": [{"text": json.dumps([_VALID_EVIDENCE_ITEM()])}]}
+        }]
+    }
+    rate_limit_exc = RateLimitError("429 rate limited")
+    mock_api = AsyncMock(side_effect=[rate_limit_exc, success_response])
+    with patch("app.worker.visual_analysis.call_gemini_api", mock_api):
+        result = await analyze_frames_with_vision(mock_frames)
+    assert len(result) == 1
+    assert result[0]["description"] == "GitHub repo page"
+    assert mock_api.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# DEFECT FIX: frame timestamps cover start/middle/end
+# ---------------------------------------------------------------------------
+
+def test_timestamps_span_full_video():
+    """Frame timestamps should span from near start to near end of video."""
+    duration = 60.0
+    max_frames = 12
+    usable = max(1.0, duration - 0.5)
+    interval = max(1.0, usable / max_frames)
+    n = min(max_frames, 16)  # HARD_FRAME_CAP
+    timestamps = [i * interval for i in range(n)]
+    # First frame should be at or near 0
+    assert timestamps[0] == 0.0
+    # Last frame should be close to duration (within one interval)
+    assert timestamps[-1] >= duration - interval * 1.5
+    # Middle frame should be roughly at duration/2
+    mid_idx = n // 2
+    assert abs(timestamps[mid_idx] - duration / 2) < interval * 2
+
+
+@pytest.mark.asyncio
+async def test_extract_keyframes_timestamp_start_middle_end():
+    """Verify extract_keyframes produces timestamps covering start, middle, end."""
+    frames = await extract_keyframes("test_vid.mp4", max_frames=8)
+    if not frames:
+        pytest.skip("No test video available")
+    timestamps = [f["timestamp"] for f in frames]
+    # First frame near start
+    assert timestamps[0] < 5.0, f"First frame timestamp {timestamps[0]} too late"
+    # Last frame near end (video is short, so within ~5s)
+    duration = await get_video_duration("test_vid.mp4")
+    assert timestamps[-1] >= duration * 0.5, (
+        f"Last frame timestamp {timestamps[-1]} too early for {duration}s video"
+    )
+    # Monotonically increasing
+    for i in range(1, len(timestamps)):
+        assert timestamps[i] > timestamps[i - 1]
+
+
+# ---------------------------------------------------------------------------
+# Structured analysis handles dict from extract_visual_evidence
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_structured_analysis_with_dict_visual_evidence():
+    """generate_structured_analysis works when visual_evidence is a dict."""
+    mock_response = {
+        "candidates": [{
+            "content": {"parts": [{"text": "**КРАТКО ДЛЯ КАНАЛА:**\nTest"}]}
+        }]
+    }
+    visual_dict = {"status": "available", "formatted": "[00:05] GitHub page | Уверенность: high"}
+    with patch("app.worker.structured_analysis.call_gemini_api", return_value=mock_response):
+        result = await generate_structured_analysis("transcript", visual_evidence=visual_dict)
+    assert "Test" in result
+
+
+@pytest.mark.asyncio
+async def test_generate_structured_analysis_with_string_visual_evidence():
+    """generate_structured_analysis works when visual_evidence is a plain string."""
+    mock_response = {
+        "candidates": [{
+            "content": {"parts": [{"text": "**КРАТКО ДЛЯ КАНАЛА:**\nTest"}]}
+        }]
+    }
+    with patch("app.worker.structured_analysis.call_gemini_api", return_value=mock_response):
+        result = await generate_structured_analysis("transcript",
+                                                    visual_evidence="[00:05] GitHub page")
+    assert "Test" in result

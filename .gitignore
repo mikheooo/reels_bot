@@ -25,3 +25,17 @@ temp_prompt.txt
 !package.json
 !package-lock.json
 !vacancies.json
+
+# Local dev scratch / probe scripts (not part of the product)
+/.pytest_tmp*/
+/temp_*.txt
+/probe_*.py
+/test_keys.py
+/test_uri.py
+/verify_paid.py
+/enqueue_*.py
+/parse_log.py
+/requeue_stuck.py
+/eval_prioritization_results.md
+/migrate_generic_reels_tasks.py
+/patch_tasks.py

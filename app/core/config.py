@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     expected_bot_username: str | None = None
     exa_api_key: str | None = None
     jina_api_key: str | None = None
+    publish_threshold: float = 0.6
 
     class Config:
         env_file = ".env"

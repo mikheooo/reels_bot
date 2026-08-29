@@ -13,6 +13,7 @@ import httpx
 from google.auth.transport.requests import Request
 
 from app.core.config import settings
+from app.worker.gemini_raw_log import key_alias, log_raw
 from app.worker.schemas import Claim, QAResult, SearchResult, VideoAnalysis
 
 logger = logging.getLogger(__name__)
@@ -21,13 +22,22 @@ OFFICIAL_DOMAINS = ["google.com", "support.google.com", "developers.google.com",
 
 # --- NEW GEMINI ROTATION LOGIC ---
 def get_gemini_keys():
+    # Free-tier keys FIRST (main + key_1..N); paid key only as fallback when
+    # all free-tier keys are rate-limited/exhausted (cheaper at current volume).
+    paid = os.getenv("GEMINI_PAID_KEY")
+    free1 = os.getenv("GEMINI_API_KEY_1") or os.getenv("GEMINI_API_KEY") or getattr(settings, "gemini_api_key", None)
     keys = [
-        os.getenv("GEMINI_API_KEY_1") or os.getenv("GEMINI_API_KEY") or getattr(settings, "gemini_api_key", None),
+        free1,
         os.getenv("GEMINI_API_KEY_2"),
         os.getenv("GEMINI_API_KEY_3"),
         os.getenv("GEMINI_API_KEY_4"),
     ]
-    return [k.strip() for k in keys if k and k.strip()]
+    keys = [k.strip() for k in keys if k and k.strip()]
+    if paid:
+        paid = paid.strip()
+        if paid not in keys:
+            keys.append(paid)   # fallback LAST
+    return keys
 
 _key_index = 0
 
@@ -140,42 +150,45 @@ async def call_gemini_api(payload: dict, max_rounds: int = 5, base_delay: float 
         for round_idx in range(1, max_rounds + 1):
             max_retry_after = 0.0
             
-            for _ in range(len(keys)):
-                key = get_next_gemini_key()
+            for key in keys:
                 if not key:
                     continue
-                
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent?key={key}"
-                headers = {"Content-Type": "application/json"}
+                # AQ.-format (paid, new) keys are accepted ONLY via the
+                # x-goog-api-key header, NOT via a ?key= query param.
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{TARGET_MODEL}:generateContent"
+                headers = {"Content-Type": "application/json", "x-goog-api-key": key}
                 
                 try:
+                    req_ts = time.time()
                     async with httpx.AsyncClient(timeout=120.0) as client:
                         resp = await client.post(url, headers=headers, json=payload)
-                        if resp.status_code in (429, 500, 502, 503, 504):
-                            status = resp.status_code
-                            retry_after_hdr = resp.headers.get("Retry-After")
-                            wait_from_hdr = 0.0
-                            if retry_after_hdr:
-                                if retry_after_hdr.isdigit():
-                                    wait_from_hdr = float(retry_after_hdr)
-                                else:
-                                    try:
-                                        dt = parsedate_to_datetime(retry_after_hdr)
-                                        if dt.tzinfo is None:
-                                            dt = dt.replace(tzinfo=timezone.utc)
-                                        wait_from_hdr = max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
-                                    except Exception:
-                                        pass
-                            max_retry_after = max(max_retry_after, wait_from_hdr)
-                            logger.warning(
-                                f"Gemini API key (...{key[-4:] if len(key) >= 4 else '***'}) returned {status} (rate limited/temporary error), Retry-After: {retry_after_hdr}. Rotating..."
-                            )
-                            last_err = httpx.HTTPStatusError(f"HTTP {status}", request=resp.request, response=resp)
-                            continue
-                        
-                        resp.raise_for_status()
-                        logger.info(f"Successfully called generativelanguage.googleapis.com with {TARGET_MODEL}")
-                        return resp.json()
+                    end_ts = time.time()
+                    log_raw(key_alias(key, getattr(settings, "gemini_api_key", None) or os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_PAID_KEY")), TARGET_MODEL, url.split("?key=")[0], resp.status_code, resp.text, req_ts, end_ts, phase="factcheck")
+                    if resp.status_code in (429, 500, 502, 503, 504):
+                        status = resp.status_code
+                        retry_after_hdr = resp.headers.get("Retry-After")
+                        wait_from_hdr = 0.0
+                        if retry_after_hdr:
+                            if retry_after_hdr.isdigit():
+                                wait_from_hdr = float(retry_after_hdr)
+                            else:
+                                try:
+                                    dt = parsedate_to_datetime(retry_after_hdr)
+                                    if dt.tzinfo is None:
+                                        dt = dt.replace(tzinfo=timezone.utc)
+                                    wait_from_hdr = max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+                                except Exception:
+                                    pass
+                        max_retry_after = max(max_retry_after, wait_from_hdr)
+                        logger.warning(
+                            f"Gemini API key (...{key[-4:] if len(key) >= 4 else '***'}) returned {status} (rate limited/temporary error), Retry-After: {retry_after_hdr}. Rotating..."
+                        )
+                        last_err = httpx.HTTPStatusError(f"HTTP {status}", request=resp.request, response=resp)
+                        continue
+
+                    resp.raise_for_status()
+                    logger.info(f"Successfully called generativelanguage.googleapis.com with {TARGET_MODEL}")
+                    return resp.json()
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code in (429, 500, 502, 503, 504):
                         last_err = e
@@ -184,6 +197,7 @@ async def call_gemini_api(payload: dict, max_rounds: int = 5, base_delay: float 
                         logger.error(f"Gemini API HTTP Error: {e.response.text}")
                         raise
                 except httpx.RequestError as e:
+                    log_raw(key_alias(key, getattr(settings, "gemini_api_key", None) or os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_PAID_KEY")), TARGET_MODEL, url.split("?key=")[0], -1, f"{type(e).__name__}: {e}", req_ts, time.time(), phase="factcheck")
                     logger.warning(f"Gemini API network error on key ...{key[-4:] if len(key) >= 4 else '***'}: {e}")
                     last_err = e
                     continue
@@ -210,7 +224,12 @@ async def call_gemini_api(payload: dict, max_rounds: int = 5, base_delay: float 
     logger.info(f"Falling back to Vertex AI for {TARGET_MODEL}")
     try:
         token = await get_vertex_token()
-        project_id = os.getenv("GCP_PROJECT_ID", "agent-harness-prod")
+        project_id = (
+            os.getenv("VERTEX_PROJECT_ID")
+            or os.getenv("VERTEX_PROJECT")
+            or os.getenv("GOOGLE_CLOUD_PROJECT")
+            or os.getenv("GCP_PROJECT_ID", "agent-harness-prod")
+        )
         url = f"https://aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/global/publishers/google/models/{TARGET_MODEL}:generateContent"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         return await post_vertex_with_retry(url, headers, payload, client_timeout=120.0, deadline=300.0)

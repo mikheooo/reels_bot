@@ -187,3 +187,14 @@ class VideoAnalysis(BaseModel):
 class QAResult(BaseModel):
     approved: bool = Field(description="True, если все факты корректно подтверждены или опровергнуты со ссылками")
     reasons: list[str] | None = Field(default=None, description="Список ошибок, если approved=False")
+
+
+class PriorityScore(BaseModel):
+    importance: float = Field(ge=0.0, le=1.0, description="Важность темы для аудитории (0.0-1.0)")
+    virality: float = Field(ge=0.0, le=1.0, description="Вирусный потенциал ролика (0.0-1.0)")
+    novelty: float = Field(ge=0.0, le=1.0, description="Новизна информации (0.0-1.0)")
+    views_potential: float = Field(ge=0.0, le=1.0, description="Вероятность просмотров (0.0-1.0)")
+    audience_value: float = Field(ge=0.0, le=1.0, description="Ценность для аудитории (0.0-1.0)")
+    overall: float = Field(description="Взвешенная сумма критериев")
+    publish: bool = Field(description="True, если материал стоит публиковать (overall >= порога)")
+    reasons: list[str] = Field(default_factory=list, description="Обоснование оценки")

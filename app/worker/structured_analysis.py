@@ -160,17 +160,24 @@ SUMMARY должен быть согласован с уровнем доказ�
 """
 
 
-async def generate_structured_analysis(transcript: str, visual_evidence: str | None = None) -> str:
+async def generate_structured_analysis(transcript: str, visual_evidence: str | dict | None = None) -> str:
     """Generate the restored markdown report using the configured Gemini router.
 
     Args:
         transcript: Raw transcript text from ``get_raw_transcript``.
-        visual_evidence: Formatted visual evidence string from
-            ``extract_visual_evidence``, or ``None`` if vision analysis is
-            unavailable (falls back to transcript-only with explicit marker).
+        visual_evidence: Formatted visual evidence from
+            ``extract_visual_evidence``. Can be a plain string (backward
+            compatible), a dict with ``"formatted"`` key from
+            ``format_visual_evidence``, or ``None`` (transcript-only fallback).
     """
     if visual_evidence is None:
-        visual_evidence = "VISUAL ANALYSIS UNAVAILABLE — анализ основан только на транскрипте"
+        visual_evidence_str = "VISUAL ANALYSIS UNAVAILABLE — анализ основан только на транскрипте"
+    elif isinstance(visual_evidence, dict):
+        visual_evidence_str = visual_evidence.get("formatted") or (
+            "VISUAL ANALYSIS UNAVAILABLE — анализ основан только на транскрипте"
+        )
+    else:
+        visual_evidence_str = str(visual_evidence)
 
     payload = {
         "contents": [
@@ -180,7 +187,7 @@ async def generate_structured_analysis(transcript: str, visual_evidence: str | N
                     {
                         "text": REPORT_PROMPT.format(
                             transcript=transcript,
-                            visual_evidence=visual_evidence,
+                            visual_evidence=visual_evidence_str,
                         )
                     }
                 ],

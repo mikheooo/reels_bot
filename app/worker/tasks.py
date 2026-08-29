@@ -13,7 +13,10 @@ from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import FSInputFile
 
+from sqlalchemy import select
+
 from app.core.config import settings
+from app.core.normalizer import clean_url
 from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
 from app.worker.business_check import format_business_check_markdown, run_business_check
@@ -23,6 +26,7 @@ from app.worker.factcheck import (
     search_exa_for_claim,
     validate_claims,
 )
+from app.worker.gemini_raw_log import key_alias, log_raw
 from app.worker.schemas import VideoAnalysis
 from app.worker.structured_analysis import generate_structured_analysis
 from app.worker.visual_analysis import extract_visual_evidence
@@ -38,6 +42,12 @@ googleapiclient.http.HttpRequest.execute = _patched_execute
 
 logger = logging.getLogger(__name__)
 genai.configure(api_key=settings.gemini_api_key)
+
+# Hard per-call timeouts (seconds) so a hung Gemini key rotates instead of
+# blocking the whole ARQ job until job_timeout (600s) silently kills it.
+CALL_GEN_TIMEOUT = float(os.getenv("GEMINI_GEN_TIMEOUT", "360"))       # generate_content
+CALL_PROCESS_TIMEOUT = float(os.getenv("GEMINI_PROCESS_TIMEOUT", "300"))  # upload PROCESSING wait
+CALL_UPLOAD_TIMEOUT = float(os.getenv("GEMINI_UPLOAD_TIMEOUT", "120"))  # video upload (File API) itself
 
 async def update_job_status(job_id: str, status: str, **kwargs):
     async with AsyncSessionLocal() as session:
@@ -195,50 +205,124 @@ async def downscale_video(input_path: str) -> str:
 
 
 
-async def get_raw_transcript(file_path: str, max_rounds: int = 5, base_delay: float = 3.0, cap_delay: float = 60.0) -> str:
-    """Extract raw transcript and visual descriptions with multi-round Gemini key rotation, 429/quota retry with exponential backoff."""
-    keys = []
+async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0) -> str:
+    """Extract raw transcript with multi-round Gemini key rotation.
+
+    Rotation pool includes the MAIN GEMINI_API_KEY even when GEMINI_API_KEY_1..N
+    are set (the main key used to be shadowed). Every generateContent attempt is
+    logged RAW (status + body + timestamps + key alias) to gemini_rotation_debug.log.
+    """
+    main_key = getattr(settings, "gemini_api_key", None)
+    if main_key:
+        main_key = main_key.strip()
+    paid_key = os.getenv("GEMINI_PAID_KEY")
+    if paid_key:
+        paid_key = paid_key.strip()
+    # pool: FREE-TIER FIRST (main + key_1..N), paid LAST as fallback when all
+    # free-tier keys are rate-limited/exhausted (cheaper at current volume).
+    pool = []
+    if main_key:
+        pool.append(main_key)
     for i in range(1, 10):
         k = os.getenv(f"GEMINI_API_KEY_{i}")
         if k:
-            keys.append(k.strip())
-    if not keys and getattr(settings, "gemini_api_key", None):
-        keys.append(settings.gemini_api_key.strip())
-        
+            k = k.strip()
+            if k not in pool:
+                pool.append(k)
+    if paid_key and paid_key not in pool:
+        pool.append(paid_key)
+    if not pool:
+        raise RuntimeError("No GEMINI_API_KEY set")
+
+    model = "gemini-3.7-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    extraction_prompt = "Сделай полную подробную транскрипцию всего, что говорят в этом видео. Верни только текст транскрипта аудио, без описания визуального контента."
+
     last_error = None
     for round_idx in range(1, max_rounds + 1):
-        for key in keys:
+        for key in pool:
+            alias = key_alias(key, main_key, paid_key)
             genai.configure(api_key=key, transport="rest")
-            logger.info(f"Trying Gemini API key ending in ...{key[-4:] if key else 'None'} (Round {round_idx}/{max_rounds})")
-            
+            logger.info(f"Trying Gemini API key ending in ...{key[-4:] if key else 'None'} ({alias}, Round {round_idx}/{max_rounds})")
+
             video_file = None
+            req_ts = time.time()
             try:
                 def _upload_and_analyze():
                     return genai.upload_file(path=file_path)
 
-                video_file = await asyncio.to_thread(_upload_and_analyze)
-                
+                # Hard timeout on the upload itself: a hung/slow upload (e.g. flaky
+                # network) must rotate to the next key instead of pinning the whole
+                # job until job_timeout. TimeoutError is caught by the handler below.
+                video_file = await asyncio.wait_for(
+                    asyncio.to_thread(_upload_and_analyze), timeout=CALL_UPLOAD_TIMEOUT
+                )
+
+                processing_deadline = time.monotonic() + CALL_PROCESS_TIMEOUT
                 while video_file.state.name == "PROCESSING":
+                    if time.monotonic() > processing_deadline:
+                        raise TimeoutError(f"Gemini video processing timeout after {CALL_PROCESS_TIMEOUT}s")
                     await asyncio.sleep(3)
                     video_file = await asyncio.to_thread(genai.get_file, video_file.name)
-                    
+
                 if video_file.state.name == "FAILED":
                     err_detail = getattr(video_file, 'error', None)
                     raise Exception(f"Gemini video processing failed: {err_detail}")
-                    
-                def _generate():
-                    flash_model = genai.GenerativeModel(model_name="gemini-3.7-flash")
-                    extraction_prompt = "Сделай полную подробную транскрипцию всего, что говорят в этом видео. Также детально опиши всё, что происходит на экране."
-                    extraction_response = flash_model.generate_content([video_file, extraction_prompt])
-                    return extraction_response.text
 
-                result = await asyncio.to_thread(_generate)
-                return result
-                
+                payload = {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"file_data": {"file_uri": video_file.uri or video_file.name, "mime_type": video_file.mime_type or "video/mp4"}},
+                                {"text": extraction_prompt},
+                            ],
+                        }
+                    ]
+                }
+                req_ts = time.time()
+                async with httpx.AsyncClient(timeout=CALL_GEN_TIMEOUT) as client:
+                    resp = await client.post(
+                        url,
+                        headers={"x-goog-api-key": key, "Accept": "application/json"},
+                        json=payload,
+                    )
+                end_ts = time.time()
+                log_raw(alias, model, url, resp.status_code, resp.text, req_ts, end_ts)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    cands = data.get("candidates", [])
+                    if not cands or not cands[0].get("content", {}).get("parts"):
+                        # Possibly blocked / no content — raise to be surfaced
+                        raise RuntimeError(f"Gemini returned empty content for {alias}: {resp.text[:400]}")
+                    text = "".join(p.get("text", "") for p in cands[0]["content"]["parts"])
+                    if text:
+                        return text
+                    raise RuntimeError(f"Gemini returned empty text for {alias}")
+
+                # transient -> rotate
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    logger.warning(f"Gemini key ({alias}) returned {resp.status_code}. Rotating...")
+                    last_error = httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=resp.request, response=resp)
+                    continue
+                # hard config/validation error -> give up on this key, raise to job
+                logger.error(f"Gemini key ({alias}) HTTP {resp.status_code}: {resp.text[:300]}")
+                raise RuntimeError(f"Gemini HTTP {resp.status_code} on {alias}: {resp.text[:300]}")
+
+            except (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError) as e:
+                end_ts = time.time()
+                log_raw(alias, model, url, -1, f"{type(e).__name__}: {e}", req_ts, end_ts)
+                logger.warning(f"Gemini key ({alias}) timed out: {e}. Rotating...")
+                last_error = e
+                continue
             except Exception as e:
                 error_msg = str(e).lower()
-                if any(err_kw in error_msg for err_kw in ("429", "quota", "exhausted", "503", "high demand", "unavailable", "rate limit")):
-                    logger.warning(f"Gemini API key (...{key[-4:] if key else 'None'}) rate limited / busy: {e}. Rotating...")
+                end_ts = time.time()
+                log_raw(alias, model, url, 0, f"{type(e).__name__}: {e}", req_ts, end_ts)
+                is_timeout = "timeout" in error_msg or "timed out" in error_msg
+                if is_timeout or any(err_kw in error_msg for err_kw in ("429", "quota", "exhausted", "503", "high demand", "unavailable", "rate limit", "read operation")):
+                    logger.warning(f"Gemini key ({alias}) rate limited / busy: {e}. Rotating...")
                     last_error = e
                     continue
                 else:
@@ -715,34 +799,73 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         await send_long_text(bot, user_id, analysis)
         await bot.session.close()
         
-        # Publish to channel
+        # Publish to channel — idempotent: skip if this video was already published.
+        channel_msg_id = None
+        url_hash = None
         try:
-            channel_id = settings.channel_chat_id or "@savemyreels"
-            logger.info(f"Publishing to channel {channel_id}")
-            channel_session = AiohttpSession(timeout=ClientTimeout(total=900))
-            bot = Bot(token=settings.bot_token, session=channel_session)
-            channel_kwargs = {
-                "chat_id": channel_id,
-                "video": FSInputFile(video_path),
-            }
-            if width > 0 and height > 0:
-                channel_kwargs["width"] = width
-                channel_kwargs["height"] = height
-            await bot.send_video(**channel_kwargs)
-            summary = _extract_summary(analysis)
-            await send_long_text(bot, channel_id, summary)
-            await bot.session.close()
-            logger.info("Published to channel successfully.")
-        except Exception as e:
-            logger.error(f"Channel publish failed: {e}")
-        
+            _, url_hash = clean_url(url)
+        except Exception:
+            url_hash = None
+        already_published = False
+        try:
+            if url_hash:
+                async with AsyncSessionLocal() as dup_s:
+                    dup_job = (await dup_s.execute(
+                        select(Job).where(
+                            Job.url_hash == url_hash,
+                            Job.tg_channel_message_id.isnot(None),
+                        ).limit(1)
+                    )).scalars().first()
+                if dup_job:
+                    already_published = True
+                    logger.warning(
+                        "DEDUP: url_hash %s already published as job_id=%s (first enqueued %s). Skipping channel post.",
+                        url_hash, dup_job.id, dup_job.created_at,
+                    )
+        except Exception as dedup_err:
+            logger.error(f"Dedup check failed (non-blocking): {dedup_err}")
+
+        if already_published:
+            logger.info("Skipping channel publish (duplicate video). User already received the analysis above.")
+        else:
+            try:
+                channel_id = settings.channel_chat_id or "@savemyreels"
+                logger.info(f"Publishing to channel {channel_id}")
+                channel_session = AiohttpSession(timeout=ClientTimeout(total=900))
+                bot = Bot(token=settings.bot_token, session=channel_session)
+                channel_kwargs = {
+                    "chat_id": channel_id,
+                    "video": FSInputFile(video_path),
+                }
+                if width > 0 and height > 0:
+                    channel_kwargs["width"] = width
+                    channel_kwargs["height"] = height
+                ch_msg = await bot.send_video(**channel_kwargs)
+                channel_msg_id = ch_msg.message_id
+                summary = _extract_summary(analysis)
+                await send_long_text(bot, channel_id, summary)
+                await bot.session.close()
+                logger.info(f"Published to channel successfully. msg_id={channel_msg_id}")
+            except Exception as e:
+                logger.error(f"Channel publish failed: {e}")
+
         from datetime import datetime, timedelta
         qa_reasons_data = {
             "analysis_json": analysis_obj.model_dump(),
             "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
             "audit_history": []
         }
-        await update_job_status(job_id, 'DONE', tg_file_id=msg.video.file_id, analysis_text=analysis, qa_reasons=qa_reasons_data, audit_scheduled_at=datetime.utcnow() + timedelta(hours=24))
+        # Only set tg_channel_message_id when we actually published; on a dedup
+        # skip, leave the existing marker intact so idempotency holds across runs.
+        done_kwargs = dict(
+            tg_file_id=msg.video.file_id,
+            analysis_text=analysis,
+            qa_reasons=qa_reasons_data,
+            audit_scheduled_at=datetime.utcnow() + timedelta(hours=24),
+        )
+        if channel_msg_id:
+            done_kwargs["tg_channel_message_id"] = channel_msg_id
+        await update_job_status(job_id, 'DONE', **done_kwargs)
 
         # Сохраняем задачи в базу данных (PostgreSQL)
         try:

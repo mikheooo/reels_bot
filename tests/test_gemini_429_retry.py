@@ -1,13 +1,15 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
+from email.utils import formatdate
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 import pytest
 import respx
-import httpx
-import asyncio
-from unittest.mock import patch, AsyncMock, MagicMock
-from datetime import datetime, timezone, timedelta
-from email.utils import formatdate
 
-from app.worker.factcheck import call_gemini_api, TARGET_MODEL
+from app.worker.factcheck import TARGET_MODEL, call_gemini_api
 from app.worker.tasks import get_raw_transcript
+
 
 @pytest.mark.asyncio
 @respx.mock
