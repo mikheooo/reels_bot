@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from app.worker.factcheck import call_gemini_api
+from app.worker.language import LanguageContext, language_prompt
 from app.worker.schemas import (
     BusinessCheckResult,
     Claim,
@@ -166,7 +167,8 @@ def _build_business_check_prompt(
     transcript: str,
     claims: list[Claim] | None = None,
     factcheck_analysis: VideoAnalysis | None = None,
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None,
+    language_context: LanguageContext | None = None,
 ) -> str:
     claims_info = []
     if factcheck_analysis and factcheck_analysis.claims:
@@ -187,6 +189,7 @@ def _build_business_check_prompt(
     meta_block = json.dumps(metadata, ensure_ascii=False) if metadata else "Метаданные отсутствуют."
 
     prompt = f"""Ты — независимый бизнес-аналитик и эксперт по анализу коммерческих и маркетинговых механик в видео (Reels/Shorts/TikTok).
+{language_prompt(language_context)}
 Твоя задача — проанализировать бизнес-слой видео (Business Check): что автор предлагает, как зарабатывает (или планирует), к чему призывает, какие расходы/условия скрыты и насколько результат воспроизводим.
 
 ГЛАВНЫЙ ПРИНЦИП:
@@ -224,11 +227,14 @@ async def run_business_check(
     transcript: str,
     claims: list[Claim] | None = None,
     factcheck_analysis: VideoAnalysis | None = None,
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None,
+    language_context: LanguageContext | None = None,
 ) -> BusinessCheckResult:
     """Run independent Business Check analysis on Reel contents and returns structured BusinessCheckResult."""
     logger.info("Executing Business Check analysis layer...")
-    prompt = _build_business_check_prompt(transcript, claims, factcheck_analysis, metadata)
+    prompt = _build_business_check_prompt(
+        transcript, claims, factcheck_analysis, metadata, language_context
+    )
 
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],

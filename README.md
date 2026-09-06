@@ -17,6 +17,9 @@ backed analysis results.
 - Routes content, scores five priority signals, and applies one deterministic
   Router + Prioritization policy before expensive optional analysis and
   publication (`app/worker/priority_policy.py`).
+- Detects source and mixed-language context locally, preserves the verbatim
+  transcript, and applies an explicit Russian analysis/user/channel output
+  contract (`app/worker/language.py`).
 
 ## Architecture
 
@@ -59,6 +62,8 @@ dirty Git tree and bakes the exact Git SHA into OCI labels and runtime logs.
 See `docs/RELEASE_OPERATIONS.md` for backup, restore and provenance commands.
 The score bands, risk floors, failure fallback and persisted policy payload are
 documented in `docs/PRIORITIZATION_POLICY.md`.
+Multilingual detection, output and claim-evidence rules are documented in
+`docs/MULTILINGUAL_ANALYSIS.md`.
 
 ## Limitations / notes
 

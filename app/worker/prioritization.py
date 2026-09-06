@@ -3,6 +3,7 @@ import logging
 
 from app.core.config import settings
 from app.worker.factcheck import call_gemini_api
+from app.worker.language import LanguageContext, language_prompt
 from app.worker.schemas import PriorityScore
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,11 @@ def _parse_json_response(text: str) -> dict:
     return json.loads(text)
 
 
-async def score_content(transcript: str, analysis_summary: str | None = None) -> PriorityScore:
+async def score_content(
+    transcript: str,
+    analysis_summary: str | None = None,
+    language_context: LanguageContext | None = None,
+) -> PriorityScore:
     if not transcript.strip():
         raise ValueError("Prioritization requires a non-empty transcript")
     threshold = getattr(settings, "publish_threshold", DEFAULT_PUBLISH_THRESHOLD)
@@ -70,6 +75,8 @@ async def score_content(transcript: str, analysis_summary: str | None = None) ->
 Также дай короткий список reasons (на русском) — почему такие оценки.
 
 СТРОГО: возвращай только JSON по схеме, числа строго в диапазоне 0.0-1.0.
+Оценивай смысл, а не язык текста: семантически эквивалентный материал на другом
+языке должен получать тот же priority band. {language_prompt(language_context)}
 
 Транскрипт:
 {transcript}

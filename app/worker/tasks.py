@@ -31,6 +31,7 @@ from app.worker.factcheck import (
     validate_claims,
 )
 from app.worker.gemini_raw_log import key_alias, log_raw
+from app.worker.language import language_delivery_outcome, resolve_language_context
 from app.worker.personal_context import load_personal_context
 from app.worker.prioritization import score_content
 from app.worker.priority_policy import (
@@ -893,11 +894,35 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         # Extract visual evidence from video frames for structured analysis
         visual_evidence = await extract_visual_evidence(video_path)
 
+        language_context = await resolve_language_context(
+            raw_video_text,
+            transcription_meta=tmeta,
+            visual_evidence=visual_evidence,
+            timeout_seconds=settings.language_detection_timeout_seconds,
+        )
+        await update_job_status(
+            job_id,
+            "PROCESSING",
+            qa_reasons={"language": language_context.model_dump()},
+        )
+        logger.info(
+            "Language context: detected=%s sources=%s mixed=%s output=%s "
+            "translation=%s fallback=%s",
+            language_context.detected_language_code,
+            language_context.source_languages,
+            language_context.is_mixed_language,
+            language_context.user_output_language_code,
+            language_context.translation_required,
+            language_context.fallback_reason,
+        )
+
         # Classify first. All expensive downstream work is controlled by a
         # deterministic policy derived from this decision.
         try:
             await set_progress(job_id, "ANALYSIS")
-            route = await route_content(raw_video_text, visual_evidence)
+            route = await route_content(
+                raw_video_text, visual_evidence, language_context
+            )
         except Exception as router_err:
             logger.error(f"Content Router failed, using compatibility policy: {router_err}")
             route = fallback_route(str(router_err))
@@ -906,7 +931,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         deprioritize_threshold = settings.deprioritize_threshold
         try:
             priority_score = await asyncio.wait_for(
-                score_content(raw_video_text, route.summary),
+                score_content(raw_video_text, route.summary, language_context),
                 timeout=settings.prioritization_timeout_seconds,
             )
             priority = evaluate_priority(
@@ -927,7 +952,10 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
 
         combined_policy = apply_priority_policy(route, priority)
         policy = combined_policy.effective_policy
-        policy_payload = policy_observability_payload(route, combined_policy)
+        policy_payload = {
+            "language": language_context.model_dump(),
+            **policy_observability_payload(route, combined_policy),
+        }
         # Persist the decision boundary before any expensive downstream work so
         # an interrupted job still explains what Router and priority decided.
         await update_job_status(job_id, "PROCESSING", qa_reasons=policy_payload)
@@ -946,7 +974,9 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         structured_analysis = None
         if policy.include_technical_details:
             try:
-                structured_analysis = await generate_structured_analysis(raw_video_text, visual_evidence)
+                structured_analysis = await generate_structured_analysis(
+                    raw_video_text, visual_evidence, language_context
+                )
                 logger.info("Technical structured analysis generated.")
             except Exception as structured_err:
                 logger.error(f"Technical structured analysis failed (non-blocking): {structured_err}")
@@ -966,7 +996,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 if policy.strict_fact_check:
                     qa_res = QAResult(approved=False, reasons=[reason])
             else:
-                claims = await extract_claims(raw_video_text)
+                claims = await extract_claims(raw_video_text, language_context)
                 fact_claims = [claim for claim in claims if claim.claim_type == "fact"]
                 search_data = {}
                 for claim in fact_claims:
@@ -989,6 +1019,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                     transcript=raw_video_text,
                     claims=analysis_obj.claims,
                     factcheck_analysis=analysis_obj,
+                    language_context=language_context,
                 )
                 analysis_obj.business_check = bc_res
                 business_check_text = format_business_check_markdown(bc_res)
@@ -1007,6 +1038,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 personal_context=personal_context,
                 fact_check_text=fact_check_text or "Не запускался по policy.",
                 business_check_text=business_check_text or "Не запускался по policy.",
+                language_context=language_context,
             )
             analysis = render_compact_analysis(route, specialized)
             detail_sections = build_detail_sections(
@@ -1026,6 +1058,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             logger.warning(msg)
             qa_reasons_data = {
                 "analysis_json": analysis_obj.model_dump(),
+                "language": language_context.model_dump(),
                 "router": route.model_dump(),
                 "priority": priority.model_dump(),
                 "policy": combined_policy.model_dump(),
@@ -1060,6 +1093,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         primary_title = extracted_tasks[0]['title'] if extracted_tasks else 'Интеграция решения из видео'
 
         delivery_status = {
+            "language": language_delivery_outcome(language_context),
             "priority": priority_delivery_outcome(priority),
             "user": "PENDING",
             "channel": "NOT_APPLICABLE",
@@ -1096,6 +1130,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         qa_reasons_data = {
             "analysis_json": analysis_obj.model_dump(),
             "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
+            "language": language_context.model_dump(),
             **policy_observability_payload(route, combined_policy),
             "specialized_analysis": specialized.model_dump() if specialized else None,
             "detail_sections": detail_sections,

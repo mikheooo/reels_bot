@@ -6,12 +6,19 @@ Production is the reactive Telegram analysis pipeline documented in
 `README.md`. Content Router, hybrid transcription, fact-checking and delivery
 semantics are current capabilities. Prioritization is connected to Router policy
 and controls only usefulness-oriented optional actions; it cannot relax safety
-requirements or hide the user result. Post-Publish Audit and the content-factory
-design are deferred and must not be described as active production capabilities.
+requirements or hide the user result. Multilingual analysis has an explicit
+source-preserving contract and offline equivalence evaluation. Post-Publish
+Audit and the content-factory design are deferred and must not be described as
+active production capabilities.
 
 ## PRIORITY 1: Мультиязычный анализ
 **Цель:** Научить пайплайн автоматически определять язык ролика и корректно работать с английским, русским, тайским, испанским, китайским, японским.
 **Включает:** Whisper (или нативный анализ Gemini), фактчекинг, QA, генерацию постов, перевод при необходимости.
+
+**Baseline 2026-09-06:** typed language context, deterministic detection,
+source preservation, Russian output policy, multilingual claim/search metadata
+and offline equivalence gates implemented. Live calibration breadth and an
+optional user-selectable output language remain future scopes.
 
 ## PRIORITY 2: Приоритизация новостей
 **Цель:** Не публиковать все подряд. Добавить AI-модуль оценки новости.

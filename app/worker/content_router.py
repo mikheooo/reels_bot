@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.worker.language import LanguageContext, language_prompt
+
 ContentType = Literal[
     "SOFTWARE_TOOL",
     "AI_SKILL_PLUGIN",
@@ -106,6 +108,8 @@ LOW не повышай только ради наличия бренда. Дл�
 Superpowers и похожие репозитории с skill.md/agent workflows — AI_SKILL_PLUGIN:
 это набор методик/skills для coding-agent, а не новая AI-модель.
 
+{language_contract}
+
 TRANSCRIPT:
 {transcript}
 
@@ -163,7 +167,9 @@ async def call_router_model(payload: dict) -> dict:
 
 
 async def route_content(
-    transcript: str, visual_evidence: str | dict | None = None
+    transcript: str,
+    visual_evidence: str | dict | None = None,
+    language_context: LanguageContext | None = None,
 ) -> RouterDecision:
     if isinstance(visual_evidence, dict):
         visual_text = visual_evidence.get("formatted") or "VISUAL ANALYSIS UNAVAILABLE"
@@ -176,7 +182,9 @@ async def route_content(
                 "parts": [
                     {
                         "text": ROUTER_PROMPT.format(
-                            transcript=transcript, visual_evidence=visual_text
+                            transcript=transcript,
+                            visual_evidence=visual_text,
+                            language_contract=language_prompt(language_context),
                         )
                     }
                 ],

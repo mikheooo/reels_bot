@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.worker.content_router import AnalysisPolicy, RouterDecision
 from app.worker.factcheck import call_gemini_api
+from app.worker.language import LanguageContext, language_prompt
 
 
 class PersonalRelevance(BaseModel):
@@ -112,6 +113,7 @@ async def generate_specialized_analysis(
     personal_context: dict,
     fact_check_text: str = "Не запускался по policy.",
     business_check_text: str = "Не запускался по policy.",
+    language_context: LanguageContext | None = None,
 ) -> SpecializedAnalysis:
     visual_text = (
         visual_evidence.get("formatted", "")
@@ -127,6 +129,7 @@ async def generate_specialized_analysis(
 Статус NOT_FOUND допустим только если контекст явно содержит проверенный инвентарь нужной области.
 Task создавай только при policy.create_tasks=true и реальном полезном действии. Высокорисковый материал
 не превращай в задачу без строгой проверки.
+{language_prompt(language_context)}
 
 PRIMARY TYPE: {route.primary_type}
 ALL LABELS: {json.dumps([x.model_dump() for x in route.labels], ensure_ascii=False)}

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     publish_threshold: float = 0.6
     deprioritize_threshold: float = 0.4
     prioritization_timeout_seconds: float = 120.0
+    language_detection_timeout_seconds: float = 2.0
     # Was hardcoded as "gemini-3.7-flash" in tasks.py and factcheck.py.
     # Override via GEMINI_MODEL in .env to switch models without touching code.
     gemini_model: str = "gemini-3.7-flash"

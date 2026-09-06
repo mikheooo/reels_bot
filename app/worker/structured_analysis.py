@@ -6,6 +6,7 @@ API keys or coupling the report to the fact-check persistence models.
 import json
 
 from app.worker.factcheck import call_gemini_api
+from app.worker.language import LanguageContext, language_prompt
 
 REPORT_PROMPT = """Ты — Reels Analyzer Михаила. На основании сырого транскрипта, описания кадров
 и визуального evidence сделай глубокий reverse-engineering разбор именно того, что показано в видео.
@@ -160,7 +161,11 @@ SUMMARY должен быть согласован с уровнем доказ�
 """
 
 
-async def generate_structured_analysis(transcript: str, visual_evidence: str | dict | None = None) -> str:
+async def generate_structured_analysis(
+    transcript: str,
+    visual_evidence: str | dict | None = None,
+    language_context: LanguageContext | None = None,
+) -> str:
     """Generate the restored markdown report using the configured Gemini router.
 
     Args:
@@ -185,7 +190,7 @@ async def generate_structured_analysis(transcript: str, visual_evidence: str | d
                 "role": "user",
                 "parts": [
                     {
-                        "text": REPORT_PROMPT.format(
+                        "text": language_prompt(language_context) + "\n\n" + REPORT_PROMPT.format(
                             transcript=transcript,
                             visual_evidence=visual_evidence_str,
                         )

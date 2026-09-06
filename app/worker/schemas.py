@@ -11,6 +11,13 @@ class SearchResult(BaseModel):
     published_date: str | None
     text_snippet: str
     retrieved_at: str
+    query_language_code: str | None = None
+
+
+class ClaimSearchQuery(BaseModel):
+    text: str
+    language_code: str
+    purpose: Literal["original", "english_coverage", "analysis_fallback"]
 
 class Claim(BaseModel):
     statement: str = Field(description="Само утверждение из видео")
@@ -53,6 +60,19 @@ class Claim(BaseModel):
     source_end: float | None = Field(default=None, description="Конец фрагмента в исходном видео (в секундах)")
     source_quote: str | None = Field(default=None, description="Цитата или фраза из исходного видео")
     source_context: str | None = Field(default=None, description="Контекст исходного видео")
+    original_statement: str | None = Field(
+        default=None, description="Утверждение дословно на языке ролика"
+    )
+    original_language_code: str = "unknown"
+    analysis_statement: str | None = Field(
+        default=None, description="Отдельное нормализованное представление на языке анализа"
+    )
+    analysis_language_code: str = "ru"
+    translation_applied: bool = False
+    translation_status: Literal[
+        "NOT_REQUIRED", "PROVIDED", "FALLBACK_ORIGINAL"
+    ] = "NOT_REQUIRED"
+    search_queries: list[ClaimSearchQuery] = Field(default_factory=list)
 
 
 # --- BUSINESS CHECK SCHEMAS ---
