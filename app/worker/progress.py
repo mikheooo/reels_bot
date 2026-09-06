@@ -30,7 +30,7 @@ def stage_text(stage: str) -> str:
     return STAGES.get(stage, STAGES["QUEUED"])
 
 
-async def set_progress(job_id: str, stage: str, session_factory=None, bot_factory=None) -> bool:
+async def set_progress(job_id: str, stage: str, session_factory=None, bot_factory=None, reply_markup=None) -> bool:
     """Edit the job's progress message. Returns True if edited.
 
     Never raises: returns False when the job has no progress message
@@ -55,7 +55,9 @@ async def set_progress(job_id: str, stage: str, session_factory=None, bot_factor
         text = stage_text(stage)
         bot = bot_factory() if bot_factory is not None else Bot(token=settings.bot_token)
         try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup
+            )
         finally:
             try:
                 await bot.session.close()

@@ -34,6 +34,10 @@ class Job(Base):
     # Both nullable so old rows keep working (no progress shown for them).
     tg_progress_chat_id = Column(BigInteger, nullable=True)
     tg_progress_message_id = Column(BigInteger, nullable=True)
+    # Canonical immutable speech-to-text result. Written once right after
+    # transcription succeeds, never overwritten by downstream stages.
+    # TEXT = no character limit. NULL for jobs processed before this feature.
+    full_transcript = Column(Text, nullable=True)
 
 class Task(Base):
     __tablename__ = "tasks"

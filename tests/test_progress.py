@@ -48,10 +48,10 @@ class FakeBot:
         self.fail = fail
         self.session = FakeBotSession(self)
 
-    async def edit_message_text(self, chat_id, message_id, text):
+    async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
         if self.fail:
             raise RuntimeError("message to edit not found")
-        self.edits.append((chat_id, message_id, text))
+        self.edits.append((chat_id, message_id, text, reply_markup))
 
 
 def make_factory(job, bot):
@@ -70,8 +70,8 @@ def test_full_sequence_edits_one_message_in_order():
     seq = ["QUEUED", "DOWNLOAD", "TRANSCRIPT", "ANALYSIS", "VERIFY", "FINALIZE", "COMPLETE"]
     for stage in seq:
         assert set_progress_sync(job, bot, sf, bf, stage) is True
-    assert [t for (_, _, t) in bot.edits] == [stage_text(s) for s in seq]
-    assert {(c, m) for (c, m, _) in bot.edits} == {(123, 456)}
+    assert [t for (_, _, t, _) in bot.edits] == [stage_text(s) for s in seq]
+    assert {(c, m) for (c, m, _, _) in bot.edits} == {(123, 456)}
     assert bot.closed is True
 
 

@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.normalizer import clean_url, is_valid_url
 from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
+from app.bot.transcript_view import LEGACY_TEXT, send_full_transcript, transcript_button
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -173,6 +174,23 @@ async def task_cycle(callback: types.CallbackQuery):
     await callback.message.edit_text(f"{emoji} {task.title}", reply_markup=new_kb)
 
 
+@router.callback_query(F.data.startswith("full:"))
+async def full_transcript(callback: types.CallbackQuery):
+    job_id = callback.data.split(":", 1)[1]
+    async with AsyncSessionLocal() as session:
+        job = await session.get(Job, job_id)
+        text = job.full_transcript if job else None
+    if not text:
+        await callback.answer(LEGACY_TEXT, show_alert=True)
+        return
+    await callback.answer("Отправляю расшифровку…")
+    try:
+        await send_full_transcript(callback.bot, callback.message.chat.id, text)
+    except Exception:
+        logger.exception(f"Could not deliver transcript for job {job_id}")
+        await callback.message.answer("Не получилось отправить расшифровку, попробуйте позже.")
+
+
 @router.message()
 async def handle_url(message: types.Message):
     url = message.text.strip()
@@ -197,6 +215,11 @@ async def handle_url(message: types.Message):
                     while text:
                         await message.answer(text[:4096])
                         text = text[4096:].strip()
+                if existing_job.full_transcript:
+                    await message.answer(
+                        "Нужен весь текст ролика без сокращений?",
+                        reply_markup=transcript_button(existing_job.id),
+                    )
                 return
             elif existing_job.status in ('QUEUED', 'PROCESSING'):
                 await message.answer("Это видео уже в очереди или обрабатывается. Я пришлю результат, как только он будет готов.")

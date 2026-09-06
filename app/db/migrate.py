@@ -29,6 +29,8 @@ async def apply_migrations(engine) -> None:
             # Progress UX: single editable Telegram status message per job.
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tg_progress_chat_id BIGINT;",
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tg_progress_message_id BIGINT;",
+            # Canonical transcript: immutable source artifact, no length limit.
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS full_transcript TEXT;",
             "CREATE INDEX IF NOT EXISTS ix_jobs_tg_channel_message_id ON jobs (tg_channel_message_id);",
             "CREATE INDEX IF NOT EXISTS ix_jobs_audit_scheduled_at ON jobs (audit_scheduled_at);",
             """

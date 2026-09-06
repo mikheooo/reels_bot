@@ -29,6 +29,7 @@ from app.worker.factcheck import (
     validate_claims,
 )
 from app.worker.gemini_raw_log import key_alias, log_raw
+from app.bot.transcript_view import transcript_button
 from app.worker.progress import set_progress
 from app.worker.schemas import VideoAnalysis
 from app.worker.structured_analysis import generate_structured_analysis
@@ -733,6 +734,10 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         logger.info(f"Extracting raw transcript for {video_path}")
         await set_progress(job_id, "TRANSCRIPT")
         raw_video_text = await get_raw_transcript(video_path)
+        # Canonical artifact: persist immediately, before structured analysis,
+        # fact-check and report composition. Downstream stages must never
+        # overwrite it; a later ERROR/REVIEW keeps the transcript available.
+        await update_job_status(job_id, 'PROCESSING', full_transcript=raw_video_text)
 
         # Extract visual evidence from video frames for structured analysis
         visual_evidence = await extract_visual_evidence(video_path)
@@ -781,7 +786,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             msg = "⚠️ Пост заблокирован QA-контроллером.\nПричины:\n- " + "\n- ".join(qa_res.reasons)
             logger.warning(msg)
             await update_job_status(job_id, 'REVIEW_REQUIRED', error_text=msg, qa_reasons=qa_res.reasons)
-            await set_progress(job_id, "REVIEW_REQUIRED")
+            await set_progress(job_id, "REVIEW_REQUIRED", reply_markup=transcript_button(job_id))
             bot = Bot(token=settings.bot_token)
             try:
                 await bot.send_message(chat_id=user_id, text=msg)
@@ -898,7 +903,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         if channel_msg_id:
             done_kwargs["tg_channel_message_id"] = channel_msg_id
         await update_job_status(job_id, 'DONE', **done_kwargs)
-        await set_progress(job_id, "COMPLETE")
+        await set_progress(job_id, "COMPLETE", reply_markup=transcript_button(job_id))
 
         # Сохраняем задачи в базу данных (PostgreSQL)
         try:
