@@ -29,6 +29,7 @@ from app.worker.audit_schemas import (
     AuditTargetStatus,
     MetricDelta,
     NormalizedMetrics,
+    TelegramEditEvent,
 )
 from app.worker.connectors import (
     CapabilityStatus,
@@ -50,6 +51,7 @@ from app.worker.post_publish_audit import (
     normalize_content_for_comparison,
     normalize_provider_metrics,
     perform_audit_check,
+    record_telegram_edit_event,
     should_send_alert,
 )
 
@@ -507,3 +509,214 @@ def test_22_audit_replay_suite_all_gates_passed():
     assert report.unsupported_fake_verification == 0       # Gate 3
     assert report.overdue_pollution_for_unavailable_connectors == 0  # Gate 4
     assert report.all_gates_passed is True
+
+
+# Test 23: Retry at different execution time (Blocker 2A)
+@pytest.mark.asyncio
+async def test_23_retry_at_different_execution_time():
+    scheduled_for = datetime(2026, 9, 7, 10, 0, 0, tzinfo=timezone.utc)
+    target = AuditTarget(
+        audit_id="audit_retry_diff_time",
+        package_id="pkg_retry",
+        delivery_id="del_retry",
+        target=TargetPlatform.X,
+        provider_post_id="post_diff_time",
+        publication_key="pub_diff_time",
+        approved_payload_hash=compute_payload_hash("Scheduled content"),
+        approved_payload_text="Scheduled content",
+        status=AuditTargetStatus.SCHEDULED,
+        tier=0,
+        next_audit_at=scheduled_for,
+    )
+    connector = MockAuditConnector(target=TargetPlatform.X, http_status=200, text="Scheduled content")
+
+    # Execution 1 at 10:00:01
+    now_1 = datetime(2026, 9, 7, 10, 0, 1, tzinfo=timezone.utc)
+    res_1, snap_1 = await perform_audit_check(
+        target, connector, now=now_1, scheduled_for=scheduled_for
+    )
+
+    # Execution 2 at 10:00:18 (simulates retry/jitter)
+    now_2 = datetime(2026, 9, 7, 10, 0, 18, tzinfo=timezone.utc)
+    res_2, snap_2 = await perform_audit_check(
+        target, connector, now=now_2, scheduled_for=scheduled_for
+    )
+
+    # Invariant: exactly 1 logical snapshot identity across different execution times
+    assert snap_1.occurrence_key == snap_2.occurrence_key
+    assert snap_1.snapshot_id == snap_2.snapshot_id
+    assert snap_1.occurrence_key == "audit_retry_diff_time:2026-09-07T10:00:00Z"
+    assert snap_1.scheduled_for == scheduled_for
+    assert snap_2.scheduled_for == scheduled_for
+
+
+# Test 24: Double scheduler firing (Blocker 2B)
+@pytest.mark.asyncio
+async def test_24_double_scheduler_firing():
+    scheduled_for = datetime(2026, 9, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+    target_row = MagicMock()
+    target_row.id = "audit_double_fire"
+    target_row.package_id = "pkg_df"
+    target_row.delivery_id = "del_df"
+    target_row.target = "X"
+    target_row.variant = "X_POST"
+    target_row.provider_post_id = "post_df"
+    target_row.provider_url = "https://x.com/post_df"
+    target_row.publication_key = "pk_df"
+    target_row.approved_payload_hash = compute_payload_hash("Double fire text")
+    target_row.approved_payload_text = "Double fire text"
+    target_row.status = "SCHEDULED"
+    target_row.tier = 0
+    target_row.next_audit_at = scheduled_for.replace(tzinfo=None)
+    target_row.attempt_count = 0
+
+    inserted_snapshots = []
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+        async def execute(self, stmt):
+            stmt_str = str(stmt)
+            res = MagicMock()
+            if "audit_targets" in stmt_str:
+                res.scalars.return_value.all.return_value = [target_row]
+            elif "audit_snapshots" in stmt_str and "WHERE audit_snapshots.occurrence_key" in stmt_str:
+                # Return existing snapshot if already inserted
+                res.scalars.return_value.first.return_value = inserted_snapshots[0] if inserted_snapshots else None
+            elif "audit_snapshots" in stmt_str:
+                res.scalars.return_value.first.return_value = None
+            return res
+
+        def add(self, obj):
+            inserted_snapshots.append(obj)
+
+        async def commit(self):
+            pass
+
+    with patch("app.worker.audit_scheduler.AsyncSessionLocal", return_value=FakeSession()), \
+         patch("app.worker.audit_scheduler.ConnectorRegistry.get_connector") as mock_conn_reg:
+        mock_conn = MockAuditConnector(target=TargetPlatform.X, http_status=200, text="Double fire text")
+        mock_conn_reg.return_value = mock_conn
+
+        # Invocation #1
+        count1 = await cron_audit_v2_jobs({})
+        assert count1 == 1
+        assert len(inserted_snapshots) == 1
+        first_snap = inserted_snapshots[0]
+
+        # Invocation #2 (duplicate firing for the same occurrence)
+        count2 = await cron_audit_v2_jobs({})
+        assert count2 == 1
+        # Invariant: zero duplicate snapshots created
+        assert len(inserted_snapshots) == 1
+        assert inserted_snapshots[0].occurrence_key == first_snap.occurrence_key
+
+
+# Test 25: Crash / retry boundary idempotency (Blocker 2C)
+@pytest.mark.asyncio
+async def test_25_crash_retry_boundary_idempotency():
+    # Simulate provider lookup succeeded, then retry at/around DB persistence boundary
+    scheduled_for = datetime(2026, 9, 7, 10, 0, 0, tzinfo=timezone.utc)
+    target = AuditTarget(
+        audit_id="audit_crash_retry",
+        package_id="pkg_crash",
+        delivery_id="del_crash",
+        target=TargetPlatform.X,
+        provider_post_id="post_crash",
+        publication_key="pub_crash",
+        approved_payload_hash=compute_payload_hash("Crash retry text"),
+        approved_payload_text="Crash retry text",
+        status=AuditTargetStatus.SCHEDULED,
+        tier=0,
+        next_audit_at=scheduled_for,
+    )
+    connector = MockAuditConnector(target=TargetPlatform.X, http_status=200, text="Crash retry text")
+
+    # Initial execution
+    res_initial, snap_initial = await perform_audit_check(
+        target, connector, now=datetime(2026, 9, 7, 10, 0, 2, tzinfo=timezone.utc), scheduled_for=scheduled_for
+    )
+
+    # Worker crashes and retries at 10:00:15
+    res_retry, snap_retry = await perform_audit_check(
+        target, connector, now=datetime(2026, 9, 7, 10, 0, 15, tzinfo=timezone.utc), scheduled_for=scheduled_for
+    )
+
+    # Strong idempotency: identical occurrence key and snapshot id
+    assert snap_initial.occurrence_key == snap_retry.occurrence_key
+    assert snap_initial.snapshot_id == snap_retry.snapshot_id
+    assert snap_retry.occurrence_key == "audit_crash_retry:2026-09-07T10:00:00Z"
+
+
+# Test 26: Telegram edited channel post recorded (Blocker 3)
+@pytest.mark.asyncio
+async def test_26_telegram_edited_channel_post_recorded():
+    observed_time = datetime(2026, 9, 7, 11, 30, 0, tzinfo=timezone.utc)
+    new_text = "Updated channel announcement payload text"
+
+    event = await record_telegram_edit_event(
+        channel_id="-100198273645",
+        message_id=54321,
+        new_text=new_text,
+        observed_at=observed_time,
+        previous_hash="hash_old_version",
+    )
+
+    # Assert observational telemetry fields
+    assert event.event_type == "EDIT_OBSERVED"
+    assert event.channel_id == "-100198273645"
+    assert event.message_id == 54321
+    assert event.observed_at == observed_time
+    assert event.previous_hash == "hash_old_version"
+    assert event.new_hash == compute_payload_hash(new_text)
+    assert event.payload_text == new_text
+
+    # Verify it never claims deletion verification or sets fake status
+    assert event.event_type != "DELETED"
+    assert event.event_type != "VERIFIED"
+
+
+# Test 27: Threads missing optional metric safe (Blocker 4)
+@pytest.mark.asyncio
+async def test_27_threads_missing_optional_metric_safe():
+    target = AuditTarget(
+        audit_id="audit_threads_opt_metrics",
+        package_id="pkg_th_opt",
+        delivery_id="del_th_opt",
+        target=TargetPlatform.THREADS,
+        provider_post_id="th_post_opt_123",
+        publication_key="pk_th_opt",
+        approved_payload_hash=compute_payload_hash("Threads text"),
+        approved_payload_text="Threads text",
+        status=AuditTargetStatus.SCHEDULED,
+        tier=0,
+    )
+    # Raw metrics only provides likes, other metrics (views, reposts, quotes, bookmarks) are absent
+    partial_raw_metrics = {"likes": 42}
+    connector = MockAuditConnector(
+        target=TargetPlatform.THREADS,
+        http_status=200,
+        text="Threads text",
+        raw_metrics=partial_raw_metrics,
+    )
+
+    result, snapshot = await perform_audit_check(target, connector)
+
+    # Verification: must succeed, not crash, not fail audit
+    assert result.status == AuditResultStatus.VERIFIED
+    assert result.object_exists is True
+    # Provided metric is normalized
+    assert result.normalized_metrics.likes == 42
+    # Missing optional metrics MUST remain None, NOT 0 or fake values
+    assert result.normalized_metrics.views is None
+    assert result.normalized_metrics.replies is None
+    assert result.normalized_metrics.reposts is None
+    assert result.normalized_metrics.quotes is None
+    assert result.normalized_metrics.bookmarks is None
+    assert snapshot.normalized_metrics.likes == 42
+    assert snapshot.normalized_metrics.views is None

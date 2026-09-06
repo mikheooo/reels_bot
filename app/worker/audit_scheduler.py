@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.db.database import AsyncSessionLocal
 from app.db.models import AuditSnapshotModel, AuditTargetModel
@@ -176,6 +177,7 @@ async def cron_audit_v2_jobs(ctx=None) -> int:
                 previous_snapshot=prev_snapshot,
                 policy=policy,
                 now=now,
+                scheduled_for=target_row.next_audit_at,
             )
 
             # Idempotency check: verify occurrence key does not already exist
@@ -192,6 +194,7 @@ async def cron_audit_v2_jobs(ctx=None) -> int:
                     id=f"asnap_{uuid.uuid4().hex[:16]}",
                     audit_id=target_row.id,
                     occurrence_key=audit_snap.occurrence_key,
+                    scheduled_for=_to_naive_utc(audit_snap.scheduled_for),
                     checked_at=_to_naive_utc(audit_snap.checked_at),
                     object_exists=audit_snap.object_exists,
                     content_hash=audit_snap.content_hash,
@@ -205,6 +208,11 @@ async def cron_audit_v2_jobs(ctx=None) -> int:
                     created_at=now_naive,
                 )
                 session.add(snap_row)
+            else:
+                logger.info(
+                    "Duplicate audit occurrence %s safely absorbed as idempotent no-op",
+                    audit_snap.occurrence_key,
+                )
 
             # Update target state
             target_row.last_checked_at = _to_naive_utc(audit_res.checked_at)

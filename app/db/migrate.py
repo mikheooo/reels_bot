@@ -179,6 +179,22 @@ async def apply_migrations(engine) -> None:
             """,
             "CREATE INDEX IF NOT EXISTS ix_audit_snapshots_audit_id ON audit_snapshots (audit_id);",
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_snapshots_occurrence_key ON audit_snapshots (occurrence_key);",
+            "ALTER TABLE audit_snapshots ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMP WITHOUT TIME ZONE;",
+            "CREATE INDEX IF NOT EXISTS ix_audit_snapshots_audit_scheduled ON audit_snapshots (audit_id, scheduled_for);",
+            """
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id VARCHAR PRIMARY KEY,
+                event_type VARCHAR NOT NULL DEFAULT 'EDIT_OBSERVED',
+                channel_id VARCHAR NOT NULL,
+                message_id BIGINT NOT NULL,
+                observed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                previous_hash VARCHAR,
+                new_hash VARCHAR NOT NULL,
+                payload_text TEXT,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_audit_events_channel_msg ON audit_events (channel_id, message_id);",
         ]
 
         for q in queries:

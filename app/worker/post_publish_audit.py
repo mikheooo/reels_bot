@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -13,6 +14,7 @@ from app.worker.audit_schemas import (
     AuditTargetStatus,
     MetricDelta,
     NormalizedMetrics,
+    TelegramEditEvent,
 )
 from app.worker.connectors import (
     CapabilityStatus,
@@ -181,24 +183,32 @@ async def perform_audit_check(
     previous_snapshot: AuditSnapshot | None = None,
     policy: AuditPolicy | None = None,
     now: datetime | None = None,
+    scheduled_for: datetime | None = None,
 ) -> tuple[AuditResult, AuditSnapshot]:
     """Execute an external lookup audit against the provider API.
 
     Enforces:
     - Accurate distinction between 404 (absent) vs 401/403 (auth required) vs 429 (throttled).
     - Technical content integrity verification.
-    - Immutable snapshot generation with occurrence key idempotency.
+    - Immutable snapshot generation with scheduled occurrence key idempotency.
     - Declarative cadence tier advancement.
     """
     checked_at = now or datetime.now(timezone.utc)
     active_policy = policy or AuditPolicy()
     t0 = time.monotonic()
 
+    # Scheduled occurrence identity:
+    # Derives strictly from logical scheduled occurrence, not execution jitter/timestamp.
+    logical_scheduled = scheduled_for or target.next_audit_at or checked_at
+    scheduled_utc = (
+        logical_scheduled if logical_scheduled.tzinfo else logical_scheduled.replace(tzinfo=timezone.utc)
+    ).astimezone(timezone.utc)
+    scheduled_for_iso = scheduled_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    occurrence_key = f"{target.audit_id}:{scheduled_for_iso}"
+    snapshot_id = f"asnap_{occurrence_key}"
+
     lookup_res = await connector.lookup(target.provider_post_id)
     latency_ms = int((time.monotonic() - t0) * 1000)
-
-    # Occurrence key for audit execution idempotency
-    occurrence_key = f"{target.audit_id}:{int(checked_at.timestamp())}"
 
     # Case A: Object lookup failed or returned error
     if not lookup_res.found:
@@ -225,6 +235,8 @@ async def perform_audit_check(
         result = AuditResult(
             status=status,
             checked_at=checked_at,
+            scheduled_for=scheduled_utc,
+            occurrence_key=occurrence_key,
             object_exists=False,
             content_match=False,
             modified=False,
@@ -239,9 +251,10 @@ async def perform_audit_check(
             latency_ms=latency_ms,
         )
         snapshot = AuditSnapshot(
-            snapshot_id=f"asnap_{occurrence_key}",
+            snapshot_id=snapshot_id,
             audit_id=target.audit_id,
             occurrence_key=occurrence_key,
+            scheduled_for=scheduled_utc,
             checked_at=checked_at,
             object_exists=False,
             content_hash=None,
@@ -279,6 +292,8 @@ async def perform_audit_check(
     result = AuditResult(
         status=status,
         checked_at=checked_at,
+        scheduled_for=scheduled_utc,
+        occurrence_key=occurrence_key,
         object_exists=True,
         content_match=content_match,
         current_content_hash=current_hash,
@@ -294,9 +309,10 @@ async def perform_audit_check(
         latency_ms=latency_ms,
     )
     snapshot = AuditSnapshot(
-        snapshot_id=f"asnap_{occurrence_key}",
+        snapshot_id=snapshot_id,
         audit_id=target.audit_id,
         occurrence_key=occurrence_key,
+        scheduled_for=scheduled_utc,
         checked_at=checked_at,
         object_exists=True,
         content_hash=current_hash,
@@ -310,6 +326,55 @@ async def perform_audit_check(
         created_at=checked_at,
     )
     return result, snapshot
+
+
+async def record_telegram_edit_event(
+    channel_id: int | str,
+    message_id: int,
+    new_text: str,
+    observed_at: datetime | None = None,
+    previous_hash: str | None = None,
+    session=None,
+) -> TelegramEditEvent:
+    """Record an observational Telegram message edit telemetry event.
+
+    Truthful observational path:
+    - Never claims fake deletion verification.
+    - Captures message/channel identifier, edit timestamp, and content hash.
+    """
+    ts = observed_at or datetime.now(timezone.utc)
+    ts_utc = (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    norm_text = normalize_content_for_comparison(new_text)
+    new_hash = compute_payload_hash(norm_text)
+    str_channel = str(channel_id)
+
+    event = TelegramEditEvent(
+        event_type="EDIT_OBSERVED",
+        channel_id=str_channel,
+        message_id=message_id,
+        observed_at=ts_utc,
+        previous_hash=previous_hash,
+        new_hash=new_hash,
+        payload_text=new_text,
+    )
+
+    if session is not None:
+        from app.db.models import AuditEventModel
+
+        evt_row = AuditEventModel(
+            id=f"aevt_{uuid.uuid4().hex[:16]}",
+            event_type=event.event_type,
+            channel_id=event.channel_id,
+            message_id=event.message_id,
+            observed_at=ts_utc.replace(tzinfo=None),
+            previous_hash=event.previous_hash,
+            new_hash=event.new_hash,
+            payload_text=event.payload_text,
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        session.add(evt_row)
+
+    return event
 
 
 def should_send_alert(result: AuditResult) -> tuple[bool, str]:

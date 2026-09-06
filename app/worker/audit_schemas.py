@@ -102,6 +102,8 @@ class AuditResult(BaseModel):
     metrics_available: bool = False
     metric_deltas: dict[str, MetricDelta] = Field(default_factory=dict)
     next_audit_at: datetime | None = None
+    scheduled_for: datetime | None = None
+    occurrence_key: str | None = None
     rate_limit_info: RateLimitInfo | None = None
     latency_ms: int = 0
 
@@ -110,6 +112,7 @@ class AuditSnapshot(BaseModel):
     snapshot_id: str
     audit_id: str
     occurrence_key: str
+    scheduled_for: datetime | None = None
     checked_at: datetime
     object_exists: bool
     content_hash: str | None = None
@@ -121,3 +124,13 @@ class AuditSnapshot(BaseModel):
     latency_ms: int = 0
     status: AuditResultStatus
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TelegramEditEvent(BaseModel):
+    event_type: str = "EDIT_OBSERVED"
+    channel_id: str
+    message_id: int
+    observed_at: datetime
+    previous_hash: str | None = None
+    new_hash: str
+    payload_text: str | None = None

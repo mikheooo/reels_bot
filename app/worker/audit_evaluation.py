@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -279,6 +279,7 @@ async def _run_eval_async(cases: list[AuditEvalCase]) -> AuditEvalReport:
                 connector=connector,
                 previous_snapshot=prev_snap,
                 now=fixed_now,
+                scheduled_for=target_obj.next_audit_at,
             )
 
             # Gate 1 Safety Check: Auth failure mistaken for deletion
@@ -288,16 +289,19 @@ async def _run_eval_async(cases: list[AuditEvalCase]) -> AuditEvalReport:
 
             # Gate 2 Safety Check: Duplicate snapshot generation on retry/duplicate trigger
             if case.action == "DUPLICATE_AUDIT_TRIGGER":
+                # Simulate retry at a different execution timestamp (+17 seconds) for the same logical occurrence
+                retry_now = fixed_now + timedelta(seconds=17)
                 result2, snapshot2 = await perform_audit_check(
                     target=target_obj,
                     connector=connector,
                     previous_snapshot=prev_snap,
-                    now=fixed_now,
+                    now=retry_now,
+                    scheduled_for=target_obj.next_audit_at,
                 )
-                if snapshot.occurrence_key != snapshot2.occurrence_key:
+                if snapshot.occurrence_key != snapshot2.occurrence_key or snapshot.snapshot_id != snapshot2.snapshot_id:
                     duplicate_snapshots += 1
                     case_detail["errors"].append(
-                        "Gate 2 violation: duplicate trigger generated divergent occurrence keys"
+                        "Gate 2 violation: duplicate trigger generated divergent occurrence keys/snapshots"
                     )
 
             # Validate audit result status

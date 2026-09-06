@@ -308,3 +308,25 @@ async def handle_url(message: types.Message):
             await session.commit()
         except Exception:
             logger.exception(f"Could not send progress message for job {job_id}")
+
+
+@router.edited_channel_post()
+async def handle_edited_channel_post(message: types.Message):
+    """Observational telemetry handler for edited channel posts."""
+    try:
+        from app.worker.post_publish_audit import record_telegram_edit_event
+        channel_id = str(message.chat.id)
+        message_id = message.message_id
+        new_text = message.text or message.caption or ""
+        observed_at = message.edit_date or message.date
+        async with AsyncSessionLocal() as session:
+            await record_telegram_edit_event(
+                channel_id=channel_id,
+                message_id=message_id,
+                new_text=new_text,
+                observed_at=observed_at,
+                session=session,
+            )
+            await session.commit()
+    except Exception as e:
+        logger.warning("Error recording telegram edit event: %s", e)

@@ -163,6 +163,7 @@ class AuditSnapshotModel(Base):
     id = Column(String, primary_key=True)
     audit_id = Column(String, ForeignKey("audit_targets.id"), nullable=False, index=True)
     occurrence_key = Column(String, unique=True, nullable=False, index=True)
+    scheduled_for = Column(DateTime, nullable=True)
     checked_at = Column(DateTime, nullable=False)
     object_exists = Column(Boolean, nullable=False)
     content_hash = Column(String, nullable=True)
@@ -173,5 +174,19 @@ class AuditSnapshotModel(Base):
     provider_http_status = Column(Integer, nullable=True)
     latency_ms = Column(Integer, default=0, nullable=False)
     status = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class AuditEventModel(Base):
+    __tablename__ = "audit_events"
+
+    id = Column(String, primary_key=True)
+    event_type = Column(String, nullable=False, default="EDIT_OBSERVED")
+    channel_id = Column(String, nullable=False)
+    message_id = Column(BigInteger, nullable=False)
+    observed_at = Column(DateTime, nullable=False)
+    previous_hash = Column(String, nullable=True)
+    new_hash = Column(String, nullable=False)
+    payload_text = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
