@@ -27,6 +27,7 @@ from app.worker.connectors import (
     ConnectorRegistry,
     PublicationConnector,
     PublicationResult,
+    ReconciliationConfidence,
     sanitize_sensitive_text,
 )
 from app.worker.content_package import (
@@ -532,7 +533,9 @@ class PublicationOrchestrator:
                 intent.attempt_count,
             )
             recon = await connector.reconcile_ambiguous_delivery(intent, current_text)
-            if recon.resolved and recon.published:
+            if recon.confidence == ReconciliationConfidence.CONFIRMED_PRESENT or (
+                recon.resolved and recon.published
+            ):
                 logger.info(
                     "Reconciliation recovered existing post %s for intent %s",
                     recon.provider_post_id,
@@ -589,10 +592,39 @@ class PublicationOrchestrator:
                     provider_post_id=recon.provider_post_id,
                     provider_url=recon.provider_url,
                 )
+            elif recon.confidence == ReconciliationConfidence.CONFIRMED_ABSENT:
+                logger.info(
+                    "Reconciliation confirmed absence of post for intent %s; proceeding.",
+                    intent.publication_key,
+                )
+            elif intent.status in (
+                PublicationIntentStatus.IN_FLIGHT,
+                PublicationIntentStatus.DELIVERY_UNKNOWN,
+            ):
+                logger.warning(
+                    "Reconciliation for intent %s in %s is INCONCLUSIVE. Halting to prevent blind repost.",
+                    intent.publication_key,
+                    intent.status.value,
+                )
+                intent.status = PublicationIntentStatus.DELIVERY_UNKNOWN
+                target_obj.status = TargetDeliveryStatus.DELIVERY_UNKNOWN
+                intent.last_error_code = "RECONCILIATION_INCONCLUSIVE"
+                intent.last_error_message = (
+                    recon.reason
+                    or "Delivery outcome remains ambiguous; manual reconciliation required"
+                )
+                return PublicationResult(
+                    success=False,
+                    is_ambiguous=True,
+                    is_retryable=False,
+                    error_code="RECONCILIATION_INCONCLUSIVE",
+                    error_message=intent.last_error_message,
+                )
 
         # Boundary A: Mark IN_FLIGHT before network dispatch
         intent.attempt_count += 1
         intent.status = PublicationIntentStatus.IN_FLIGHT
+        intent.attempt_started_at = now_naive
 
         # Execute publish via connector
         pub_result = await connector.publish(current_text, intent)
@@ -661,7 +693,9 @@ class PublicationOrchestrator:
 
             # Immediate ambiguous reconciliation
             recon = await connector.reconcile_ambiguous_delivery(intent, current_text)
-            if recon.resolved and recon.published:
+            if recon.confidence == ReconciliationConfidence.CONFIRMED_PRESENT or (
+                recon.resolved and recon.published
+            ):
                 intent.status = PublicationIntentStatus.SUCCEEDED
                 intent.provider_post_id = recon.provider_post_id
                 intent.provider_url = recon.provider_url
@@ -692,8 +726,23 @@ class PublicationOrchestrator:
                     retry_count=intent.attempt_count - 1,
                 )
                 package.delivery_records.append(rec)
-            else:
-                # Ambiguous not confirmed -> never blind retry, record status
+            elif recon.confidence == ReconciliationConfidence.CONFIRMED_ABSENT:
+                # Confirmed absent -> retry permitted if retryable and attempts remain
+                if pub_result.is_retryable and intent.attempt_count < settings.publish_max_retries:
+                    intent.status = PublicationIntentStatus.PENDING
+                    if pub_result.retry_after_seconds and pub_result.retry_after_seconds > 0:
+                        delay_sec = pub_result.retry_after_seconds
+                    else:
+                        backoff_idx = min(
+                            intent.attempt_count - 1,
+                            len(settings.publish_retry_backoff_seconds) - 1,
+                        )
+                        delay_sec = settings.publish_retry_backoff_seconds[backoff_idx]
+                    intent.next_retry_at = now_naive + datetime.timedelta(seconds=delay_sec)
+                else:
+                    intent.status = PublicationIntentStatus.FAILED
+                    target_obj.status = TargetDeliveryStatus.FAILED
+
                 rec = DeliveryRecord.create(
                     package_id=package.package_id,
                     target=intent.target,
@@ -702,11 +751,37 @@ class PublicationOrchestrator:
                     approval_state=PackageStatus.APPROVED,
                     status=(
                         DeliveryOutcome.RETRYABLE_ERROR
-                        if pub_result.is_retryable
+                        if intent.status == PublicationIntentStatus.PENDING
                         else DeliveryOutcome.FAILED
                     ),
                     error_code=pub_result.error_code,
                     error_message=sanitize_sensitive_text(pub_result.error_message or ""),
+                    finished_at=now_naive,
+                    publication_key=intent.publication_key,
+                    payload_hash=intent.payload_hash,
+                    retry_count=intent.attempt_count - 1,
+                )
+                package.delivery_records.append(rec)
+            else:
+                # INCONCLUSIVE:
+                # Ambiguous outcome inconclusive -> never blind retry, remain DELIVERY_UNKNOWN
+                intent.status = PublicationIntentStatus.DELIVERY_UNKNOWN
+                target_obj.status = TargetDeliveryStatus.DELIVERY_UNKNOWN
+                pub_result.is_retryable = False
+                intent.last_error_code = "RECONCILIATION_INCONCLUSIVE"
+                intent.last_error_message = (
+                    recon.reason
+                    or "Delivery outcome remains ambiguous; manual reconciliation required"
+                )
+                rec = DeliveryRecord.create(
+                    package_id=package.package_id,
+                    target=intent.target,
+                    variant=intent.variant,
+                    attempt_id=attempt_id,
+                    approval_state=PackageStatus.APPROVED,
+                    status=DeliveryOutcome.FAILED,
+                    error_code="RECONCILIATION_INCONCLUSIVE",
+                    error_message=sanitize_sensitive_text(intent.last_error_message),
                     finished_at=now_naive,
                     publication_key=intent.publication_key,
                     payload_hash=intent.payload_hash,

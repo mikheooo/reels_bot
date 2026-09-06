@@ -16,7 +16,7 @@ import hashlib
 import logging
 import re
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 
@@ -55,6 +55,14 @@ class CapabilityStatus(str, Enum):
     DISABLED = "DISABLED"
 
 
+class ReconciliationConfidence(str, Enum):
+    """Reconciliation confidence levels for ambiguous publication outcomes."""
+
+    CONFIRMED_PRESENT = "CONFIRMED_PRESENT"
+    CONFIRMED_ABSENT = "CONFIRMED_ABSENT"
+    INCONCLUSIVE = "INCONCLUSIVE"
+
+
 class ConnectorCapabilities(BaseModel):
     target: TargetPlatform
     status: CapabilityStatus
@@ -68,6 +76,7 @@ class ConnectorCapabilities(BaseModel):
     supports_lookup: bool = False
     supports_timeline_reconciliation: bool = False
     supports_native_idempotency: bool = False
+    orchestrator_managed_idempotency: bool = True
     max_media_count: int = 0
     supported_mime_types: list[str] = Field(default_factory=lambda: ["text/plain"])
     rate_limit_model: str = ""
@@ -177,9 +186,35 @@ class LookupResult(BaseModel):
 class AmbiguousReconciliationResult(BaseModel):
     resolved: bool
     published: bool
+    confidence: ReconciliationConfidence = ReconciliationConfidence.INCONCLUSIVE
     provider_post_id: str | None = None
     provider_url: str | None = None
     reason: str | None = None
+
+
+def parse_provider_timestamp(ts_val: str | None) -> datetime | None:
+    """Parse ISO-8601 provider timestamp into UTC timezone-aware datetime."""
+    if not ts_val:
+        return None
+    try:
+        cleaned = ts_val.strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _normalize_dt(dt: datetime | None) -> datetime | None:
+    """Normalize datetime to UTC timezone-aware datetime."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class PublicationConnector(ABC):
@@ -278,7 +313,8 @@ class XConnector(PublicationConnector):
             supports_delete=True,
             supports_lookup=True,
             supports_timeline_reconciliation=True,
-            supports_native_idempotency=True,
+            supports_native_idempotency=False,
+            orchestrator_managed_idempotency=True,
             max_media_count=0,
             supported_mime_types=["text/plain"],
             rate_limit_model="header_driven_x_rate_limit_or_tier_fallback",
@@ -519,17 +555,31 @@ class XConnector(PublicationConnector):
                 return AmbiguousReconciliationResult(
                     resolved=True,
                     published=True,
+                    confidence=ReconciliationConfidence.CONFIRMED_PRESENT,
                     provider_post_id=lookup_res.provider_post_id,
                     provider_url=f"https://x.com/i/status/{lookup_res.provider_post_id}",
                     reason="Verified existing post by ID lookup",
                 )
+
+        if not self._has_credentials():
+            return AmbiguousReconciliationResult(
+                resolved=False,
+                published=False,
+                confidence=ReconciliationConfidence.INCONCLUSIVE,
+                reason="X credentials not configured; manual reconciliation required",
+            )
+
+        intent_time = _normalize_dt(
+            getattr(intent, "attempt_started_at", None) or getattr(intent, "approved_at", None)
+        )
+        min_valid_time = (intent_time - timedelta(seconds=120)) if intent_time else None
 
         # Without provider post ID, search user's recent tweets
         client = self._get_client()
         headers = self._get_auth_headers()
         try:
             resp = await client.get(
-                "https://api.x.com/2/users/me/tweets?max_results=5&tweet.fields=text",
+                "https://api.x.com/2/users/me/tweets?max_results=5&tweet.fields=created_at,text",
                 headers=headers,
             )
             if resp.status_code == 200:
@@ -538,19 +588,31 @@ class XConnector(PublicationConnector):
                 for tw in tweets:
                     tw_text = tw.get("text", "").strip()
                     if target_snippet and target_snippet in tw_text:
+                        tw_ts = parse_provider_timestamp(tw.get("created_at"))
+                        if min_valid_time and tw_ts and tw_ts < min_valid_time:
+                            logger.warning(
+                                "Found tweet %s matching text, but created_at %s is older than attempt window (%s). Skipping older duplicate.",
+                                tw.get("id"),
+                                tw_ts.isoformat(),
+                                min_valid_time.isoformat(),
+                            )
+                            continue
+
                         tw_id = str(tw.get("id"))
                         return AmbiguousReconciliationResult(
                             resolved=True,
                             published=True,
+                            confidence=ReconciliationConfidence.CONFIRMED_PRESENT,
                             provider_post_id=tw_id,
                             provider_url=f"https://x.com/i/status/{tw_id}",
-                            reason="Matched recent tweet text",
+                            reason="Matched recent tweet text verified within attempt window",
                         )
-                # Not found in recent tweets -> safe to retry
+                # Bounded query cannot authoritatively confirm absence due to eventual consistency / delays
                 return AmbiguousReconciliationResult(
-                    resolved=True,
+                    resolved=False,
                     published=False,
-                    reason="Post not found in recent user tweets; retry permitted",
+                    confidence=ReconciliationConfidence.INCONCLUSIVE,
+                    reason="Post not found in recent user tweets or matched only older duplicate tweets; absence cannot be definitively proven; manual reconciliation required",
                 )
         except Exception as e:
             logger.error("X reconciliation error: %s", sanitize_sensitive_text(str(e)))
@@ -558,7 +620,8 @@ class XConnector(PublicationConnector):
         return AmbiguousReconciliationResult(
             resolved=False,
             published=False,
-            reason="Could not definitively prove or disprove tweet creation",
+            confidence=ReconciliationConfidence.INCONCLUSIVE,
+            reason="Could not definitively prove or disprove tweet creation; manual reconciliation required",
         )
 
 
@@ -606,6 +669,7 @@ class ThreadsConnector(PublicationConnector):
             supports_lookup=True,
             supports_timeline_reconciliation=True,
             supports_native_idempotency=False,
+            orchestrator_managed_idempotency=True,
             max_media_count=0,
             supported_mime_types=["text/plain"],
             rate_limit_model="header_driven_threads_250_rolling_24h",
@@ -883,6 +947,7 @@ class ThreadsConnector(PublicationConnector):
                 return AmbiguousReconciliationResult(
                     resolved=True,
                     published=True,
+                    confidence=ReconciliationConfidence.CONFIRMED_PRESENT,
                     provider_post_id=lookup_res.provider_post_id,
                     provider_url=f"https://www.threads.net/t/{lookup_res.provider_post_id}",
                     reason="Verified existing Threads post by ID",
@@ -892,14 +957,20 @@ class ThreadsConnector(PublicationConnector):
             return AmbiguousReconciliationResult(
                 resolved=False,
                 published=False,
+                confidence=ReconciliationConfidence.INCONCLUSIVE,
                 reason="Threads credentials not configured; manual reconciliation required",
             )
+
+        intent_time = _normalize_dt(
+            getattr(intent, "attempt_started_at", None) or getattr(intent, "approved_at", None)
+        )
+        min_valid_time = (intent_time - timedelta(seconds=120)) if intent_time else None
 
         # Without provider post ID, query recent user threads to verify if post was created
         client = self._get_client()
         url = (
             f"https://graph.threads.net/v1.0/{self.user_id}/threads"
-            f"?limit=5&fields=id,text,permalink&access_token={self.access_token}"
+            f"?limit=5&fields=id,text,permalink,timestamp&access_token={self.access_token}"
         )
         try:
             resp = await client.get(url)
@@ -909,20 +980,32 @@ class ThreadsConnector(PublicationConnector):
                 for th in threads:
                     th_text = th.get("text", "").strip()
                     if target_snippet and target_snippet in th_text:
+                        th_ts = parse_provider_timestamp(th.get("timestamp") or th.get("created_at"))
+                        if min_valid_time and th_ts and th_ts < min_valid_time:
+                            logger.warning(
+                                "Found post %s matching text, but timestamp %s is older than attempt window (%s). Skipping older duplicate.",
+                                th.get("id"),
+                                th_ts.isoformat(),
+                                min_valid_time.isoformat(),
+                            )
+                            continue
+
                         th_id = str(th.get("id"))
                         permalink = th.get("permalink") or f"https://www.threads.net/t/{th_id}"
                         return AmbiguousReconciliationResult(
                             resolved=True,
                             published=True,
+                            confidence=ReconciliationConfidence.CONFIRMED_PRESENT,
                             provider_post_id=th_id,
                             provider_url=permalink,
-                            reason="Matched recent Threads post text",
+                            reason="Matched recent Threads post text verified within attempt window",
                         )
-                # Confirmed not found in recent user threads -> safe to retry
+                # Bounded query cannot authoritatively confirm absence due to eventual consistency / delays
                 return AmbiguousReconciliationResult(
-                    resolved=True,
+                    resolved=False,
                     published=False,
-                    reason="Post not found in recent user threads; retry permitted",
+                    confidence=ReconciliationConfidence.INCONCLUSIVE,
+                    reason="Post not found in recent user threads or matched only older duplicate posts; absence cannot be definitively proven; manual reconciliation required",
                 )
             else:
                 logger.error(
@@ -936,6 +1019,7 @@ class ThreadsConnector(PublicationConnector):
         return AmbiguousReconciliationResult(
             resolved=False,
             published=False,
+            confidence=ReconciliationConfidence.INCONCLUSIVE,
             reason="Could not definitively prove or disprove Threads post creation; manual reconciliation required",
         )
 
@@ -963,6 +1047,7 @@ class YouTubeCommunityConnector(PublicationConnector):
             supports_lookup=False,
             supports_timeline_reconciliation=False,
             supports_native_idempotency=False,
+            orchestrator_managed_idempotency=False,
             max_media_count=0,
             supported_mime_types=["text/plain"],
             rate_limit_model="none_manual_export",
@@ -1010,6 +1095,7 @@ class YouTubeCommunityConnector(PublicationConnector):
         return AmbiguousReconciliationResult(
             resolved=True,
             published=False,
+            confidence=ReconciliationConfidence.CONFIRMED_ABSENT,
             reason="YouTube Community is manual export only; no API delivery occurred",
         )
 

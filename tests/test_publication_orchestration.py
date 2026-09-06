@@ -7,8 +7,9 @@ import datetime
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.worker.connectors import (
@@ -21,7 +22,10 @@ from app.worker.connectors import (
     PublicationConnector,
     PublicationResult,
     RateLimitInfo,
+    ReconciliationConfidence,
     ThreadsConnector,
+    XConnector,
+    YouTubeCommunityConnector,
 )
 from app.worker.content_package import (
     CanonicalContentResult,
@@ -173,6 +177,7 @@ class MockTestConnector(PublicationConnector):
         error_code: str | None = None,
         error_message: str | None = None,
         reconcile_finds_post: bool = False,
+        reconcile_confidence: ReconciliationConfidence | None = None,
         max_chars: int | None = None,
         supports_text: bool = True,
         retry_after_seconds: int | None = None,
@@ -187,6 +192,7 @@ class MockTestConnector(PublicationConnector):
         self.error_code = error_code
         self.error_message = error_message
         self.reconcile_finds_post = reconcile_finds_post
+        self.reconcile_confidence = reconcile_confidence
         self.max_chars = max_chars or (500 if target == TargetPlatform.THREADS else 280)
         self.supports_text = supports_text
         self.retry_after_seconds = retry_after_seconds
@@ -203,6 +209,8 @@ class MockTestConnector(PublicationConnector):
             supports_lookup=True,
             supports_delete=True,
             supports_timeline_reconciliation=True,
+            supports_native_idempotency=False,
+            orchestrator_managed_idempotency=True,
             auth_model="Mock Auth",
             official_endpoint="https://mock.api",
         )
@@ -250,18 +258,45 @@ class MockTestConnector(PublicationConnector):
         self, intent: PublicationIntent, text: str
     ) -> AmbiguousReconciliationResult:
         self.reconcile_calls.append({"intent": intent, "text": text})
+        if self.reconcile_confidence is not None:
+            if self.reconcile_confidence == ReconciliationConfidence.CONFIRMED_PRESENT:
+                return AmbiguousReconciliationResult(
+                    resolved=True,
+                    published=True,
+                    confidence=ReconciliationConfidence.CONFIRMED_PRESENT,
+                    provider_post_id=self.post_id,
+                    provider_url=f"https://platform.com/post/{self.post_id}",
+                    reason="Found matching post in timeline",
+                )
+            elif self.reconcile_confidence == ReconciliationConfidence.CONFIRMED_ABSENT:
+                return AmbiguousReconciliationResult(
+                    resolved=True,
+                    published=False,
+                    confidence=ReconciliationConfidence.CONFIRMED_ABSENT,
+                    reason="Confirmed absent from provider",
+                )
+            else:
+                return AmbiguousReconciliationResult(
+                    resolved=False,
+                    published=False,
+                    confidence=ReconciliationConfidence.INCONCLUSIVE,
+                    reason="Reconciliation inconclusive",
+                )
+
         if self.reconcile_finds_post:
             return AmbiguousReconciliationResult(
                 resolved=True,
                 published=True,
+                confidence=ReconciliationConfidence.CONFIRMED_PRESENT,
                 provider_post_id=self.post_id,
                 provider_url=f"https://platform.com/post/{self.post_id}",
                 reason="Found matching post in timeline",
             )
         return AmbiguousReconciliationResult(
-            resolved=True,
+            resolved=False,
             published=False,
-            reason="Post not found in timeline",
+            confidence=ReconciliationConfidence.INCONCLUSIVE,
+            reason="Post not found in timeline; absence cannot be definitively proven",
         )
 
 
@@ -1217,6 +1252,288 @@ async def test_mp_18_secrets_absent_from_telemetry_log_output():
     assert "[REDACTED_CREDENTIAL]" in plan.intents[0].last_error_message
     assert len(pkg.delivery_records) == 1
     assert "THREADS_SECRET_TOKEN_XYZ" not in pkg.delivery_records[0].error_message
+
+
+@pytest.mark.asyncio
+async def test_mp_19_recon_duplicate_text_old_post_not_attributed():
+    """User has an older post with identical text; reconciliation must NOT falsely attribute it."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    # Intent approved now
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    intent = plan.intents[0]
+    intent.attempt_started_at = datetime.datetime.now(datetime.timezone.utc)
+
+    # Mock Threads API returning an older post with identical text
+    thr_conn = ThreadsConnector(access_token="tok_123", user_id="usr_456")
+    old_post_resp = httpx.Response(
+        200,
+        json={
+            "data": [
+                {
+                    "id": "old-threads-post-999",
+                    "text": intent.variant.value if hasattr(intent.variant, "value") else "Test Threads post content",
+                    "permalink": "https://www.threads.net/t/old-threads-post-999",
+                    "timestamp": "2026-09-01T00:00:00+0000",  # 6 days before attempt!
+                }
+            ]
+        },
+    )
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = old_post_resp
+        recon = await thr_conn.reconcile_ambiguous_delivery(intent, "Test Threads post content")
+
+        assert recon.confidence == ReconciliationConfidence.INCONCLUSIVE
+        assert recon.resolved is False
+        assert recon.published is False
+        assert recon.provider_post_id is None
+
+
+@pytest.mark.asyncio
+async def test_mp_20_recon_delayed_visibility_remains_manual_no_blind_repost():
+    """Ambiguous publish with delayed visibility remains DELIVERY_UNKNOWN; zero duplicate calls on replay."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_ambiguous=True,
+        reconcile_finds_post=False,
+    )
+    reg = MagicMock(get_connector=lambda t: thr_conn)
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+
+    # First attempt: timeout occurs, immediate reconciliation is inconclusive
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert len(thr_conn.publish_calls) == 1
+    thr_intent = plan.intents[0]
+    assert thr_intent.status == PublicationIntentStatus.DELIVERY_UNKNOWN
+    assert plan.status == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+    # Replay/recovery invocation: must halt because reconciliation is inconclusive -> ZERO second publish calls
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert len(thr_conn.publish_calls) == 1  # Still exactly 1! Blind reposts = 0
+    assert thr_intent.status == PublicationIntentStatus.DELIVERY_UNKNOWN
+    assert plan.status == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_mp_21_recon_confirmed_absent_permits_retry():
+    """When provider authoritatively confirms absence, retry backoff is scheduled."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_ambiguous=True,
+        is_retryable=True,
+        reconcile_confidence=ReconciliationConfidence.CONFIRMED_ABSENT,
+    )
+    reg = MagicMock(get_connector=lambda t: thr_conn)
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    thr_intent = plan.intents[0]
+    assert thr_intent.status == PublicationIntentStatus.PENDING
+    assert thr_intent.next_retry_at is not None
+    assert plan.status == PublicationPlanStatus.RETRY_PENDING
+
+
+@pytest.mark.asyncio
+async def test_mp_22_plan_x_succeeded_threads_inconclusive_no_x_redispatch():
+    """X succeeded and Threads is DELIVERY_UNKNOWN; plan is MANUAL_RECONCILIATION_REQUIRED and X is not re-dispatched."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-101")
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_ambiguous=True,
+        reconcile_finds_post=False,
+    )
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert pkg.distribution_targets[TargetPlatform.X.value].status == TargetDeliveryStatus.DELIVERED
+    assert plan.status == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+    assert len(x_conn.publish_calls) == 1
+    assert len(thr_conn.publish_calls) == 1
+
+    # Second execution (e.g. after restart or worker sweep)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    # Invariants: X never re-dispatched, Threads not blindly reposted
+    assert len(x_conn.publish_calls) == 1
+    assert len(thr_conn.publish_calls) == 1
+    assert plan.status == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_mp_23_threads_connector_reconcile_unit_cases():
+    """Direct unit tests on ThreadsConnector.reconcile_ambiguous_delivery."""
+    conn = ThreadsConnector(access_token="tok_abc", user_id="12345")
+    intent = PublicationIntent.create(
+        package_id="pkg_u1",
+        job_id="job_u1",
+        target=TargetPlatform.THREADS,
+        variant=OutputVariantType.THREADS_POST,
+        approved_by=1001,
+        payload_text="Threads unit test payload text",
+    )
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    intent.attempt_started_at = now_utc
+
+    # Case A: Matching text + fresh timestamp -> CONFIRMED_PRESENT
+    fresh_ts = (now_utc - datetime.timedelta(seconds=10)).isoformat()
+    mock_fresh = httpx.Response(
+        200,
+        json={"data": [{"id": "th-fresh-1", "text": "Threads unit test payload text", "timestamp": fresh_ts}]},
+    )
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_fresh
+        res = await conn.reconcile_ambiguous_delivery(intent, "Threads unit test payload text")
+        assert res.confidence == ReconciliationConfidence.CONFIRMED_PRESENT
+        assert res.resolved is True
+        assert res.published is True
+        assert res.provider_post_id == "th-fresh-1"
+
+    # Case B: Matching text + stale timestamp -> INCONCLUSIVE (duplicate text protection)
+    stale_ts = (now_utc - datetime.timedelta(days=2)).isoformat()
+    mock_stale = httpx.Response(
+        200,
+        json={"data": [{"id": "th-stale-2", "text": "Threads unit test payload text", "timestamp": stale_ts}]},
+    )
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_stale
+        res = await conn.reconcile_ambiguous_delivery(intent, "Threads unit test payload text")
+        assert res.confidence == ReconciliationConfidence.INCONCLUSIVE
+        assert res.resolved is False
+        assert res.published is False
+
+    # Case C: Not found in recent timeline -> INCONCLUSIVE (never fake CONFIRMED_ABSENT)
+    mock_empty = httpx.Response(200, json={"data": []})
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_empty
+        res = await conn.reconcile_ambiguous_delivery(intent, "Threads unit test payload text")
+        assert res.confidence == ReconciliationConfidence.INCONCLUSIVE
+        assert res.resolved is False
+        assert res.published is False
+
+
+@pytest.mark.asyncio
+async def test_mp_24_x_connector_reconcile_unit_cases():
+    """Direct unit tests on XConnector.reconcile_ambiguous_delivery."""
+    conn = XConnector(bearer_token="tok_xyz")
+    intent = PublicationIntent.create(
+        package_id="pkg_u2",
+        job_id="job_u2",
+        target=TargetPlatform.X,
+        variant=OutputVariantType.X_POST,
+        approved_by=1001,
+        payload_text="X unit test payload text",
+    )
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    intent.attempt_started_at = now_utc
+
+    # Case A: Matching text + fresh created_at -> CONFIRMED_PRESENT
+    fresh_ts = (now_utc - datetime.timedelta(seconds=5)).isoformat()
+    mock_fresh = httpx.Response(
+        200,
+        json={"data": [{"id": "x-fresh-1", "text": "X unit test payload text", "created_at": fresh_ts}]},
+    )
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_fresh
+        res = await conn.reconcile_ambiguous_delivery(intent, "X unit test payload text")
+        assert res.confidence == ReconciliationConfidence.CONFIRMED_PRESENT
+        assert res.resolved is True
+        assert res.published is True
+        assert res.provider_post_id == "x-fresh-1"
+
+    # Case B: Matching text + stale created_at -> INCONCLUSIVE
+    stale_ts = (now_utc - datetime.timedelta(days=5)).isoformat()
+    mock_stale = httpx.Response(
+        200,
+        json={"data": [{"id": "x-stale-2", "text": "X unit test payload text", "created_at": stale_ts}]},
+    )
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_stale
+        res = await conn.reconcile_ambiguous_delivery(intent, "X unit test payload text")
+        assert res.confidence == ReconciliationConfidence.INCONCLUSIVE
+        assert res.resolved is False
+        assert res.published is False
+
+    # Case C: Not found -> INCONCLUSIVE
+    mock_empty = httpx.Response(200, json={"data": []})
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_empty
+        res = await conn.reconcile_ambiguous_delivery(intent, "X unit test payload text")
+        assert res.confidence == ReconciliationConfidence.INCONCLUSIVE
+        assert res.resolved is False
+        assert res.published is False
+
+
+def test_mp_25_manual_reconciliation_state_survives_restart():
+    """Ensure PublicationPlan and intent states persist and recalculate identically across restarts."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    plan.intents[0].status = PublicationIntentStatus.SUCCEEDED
+    plan.intents[1].status = PublicationIntentStatus.DELIVERY_UNKNOWN
+    plan.status = calculate_aggregate_plan_status(plan)
+    assert plan.status == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+    # Serialize to JSON dict and reconstruct
+    data = plan.model_dump() if hasattr(plan, "model_dump") else plan.dict()
+    restored_plan = PublicationPlan(**data)
+
+    assert restored_plan.intents[0].status == PublicationIntentStatus.SUCCEEDED
+    assert restored_plan.intents[1].status == PublicationIntentStatus.DELIVERY_UNKNOWN
+    assert calculate_aggregate_plan_status(restored_plan) == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+
+def test_mp_26_native_idempotency_audit():
+    """Verify accurate reporting of native idempotency vs orchestrator-managed idempotency."""
+    x_caps = XConnector().capabilities()
+    assert x_caps.supports_native_idempotency is False
+    assert x_caps.orchestrator_managed_idempotency is True
+
+    thr_caps = ThreadsConnector().capabilities()
+    assert thr_caps.supports_native_idempotency is False
+    assert thr_caps.orchestrator_managed_idempotency is True
+
+    yt_caps = YouTubeCommunityConnector().capabilities()
+    assert yt_caps.supports_native_idempotency is False
+    assert yt_caps.orchestrator_managed_idempotency is False
 
 
 # =========================================================================

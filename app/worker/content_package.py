@@ -202,6 +202,7 @@ class PublicationIntent(BaseModel):
     provider_url: str | None = None
     plan_id: str | None = None
     scheduled_for: datetime.datetime | None = None
+    attempt_started_at: datetime.datetime | None = None
 
     @classmethod
     def create(
