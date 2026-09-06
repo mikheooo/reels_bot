@@ -780,6 +780,132 @@ def test_telegram_long_cleanup_for_kwork_example_preserves_metadata():
     assert canonical.model_dump()["risk_reasons"][0] == "PROMISE_RESULT (85%)"
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            (
+                "Инструкция по подключению внешнего плагина или сервиса автоматизации "
+                "к ChatGPT через режим разработчика"
+            ),
+            "Подключение внешнего плагина или сервиса автоматизации к ChatGPT",
+        ),
+        (
+            (
+                "Видеоролик с демонстрацией создания анимированного видеоролика с "
+                "помощью Remotion, синтеза речи и инструкций для ИИ-агента"
+            ),
+            "Создание анимированного видеоролика с помощью Remotion",
+        ),
+        (
+            (
+                "Тир-лист и субъективная оценка популярных AI-сертификаций "
+                "(Google AI Essentials, GitHub Foundations, AWS AI Practitioner) "
+                "для карьеры"
+            ),
+            "Тир-лист и субъективная оценка популярных AI-сертификаций",
+        ),
+        (
+            (
+                "Видеоролик с демонстрацией якобы полученного дохода 675 заказов за "
+                "три месяца и инструкцией по созданию инфобизнеса"
+            ),
+            "Заявленный доход 675 заказов за три месяца",
+        ),
+    ],
+)
+def test_human_title_prefers_complete_phrase(source, expected):
+    canonical = CanonicalContentResult(
+        title=source,
+        topic="Software Tool",
+        summary="Краткий смысл.",
+        what_it_is=source,
+        why_it_matters="Практический контекст.",
+        risk_level="LOW",
+    )
+
+    title = render_human_title(canonical)
+
+    assert title == expected
+    assert len(title.split()) <= 12
+    assert title.split()[-1].casefold() not in {"и", "для", "через"}
+
+
+def test_low_risk_omits_intent_bullets_and_medium_omits_neutral_intents():
+    labels = ["INFORM (90%)", "ENTERTAIN (80%)", "RECOMMEND (75%)"]
+
+    low = render_human_risk_explanation("LOW", labels)
+    medium = render_human_risk_explanation("MEDIUM", labels)
+
+    assert low.reasons == []
+    assert medium.reasons == ["Автор даёт конкретную рекомендацию."]
+
+
+def test_canonical_claim_prefers_normalized_analysis_language_statement():
+    original = "Donkey Cut is a free CapCut alternative."
+    normalized = "Donkey Cut — бесплатная альтернатива CapCut."
+    analysis = VideoAnalysis(
+        claims=[
+            Claim(
+                statement=original,
+                analysis_statement=normalized,
+                claim_type="fact",
+                status="подтверждено",
+            )
+        ],
+        viable_idea=False,
+    )
+
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang("en"),
+        specialized=_dummy_specialized(),
+        analysis=analysis,
+    )
+
+    assert canonical.verified_claims[0].statement == normalized
+    assert analysis.claims[0].statement == original
+
+
+def test_educational_business_result_uses_meaning_heading_without_losing_enum():
+    canonical = CanonicalContentResult(
+        title="Открытый инструмент для видеомонтажа",
+        topic="Software Tool",
+        summary="Образовательный обзор инструмента.",
+        what_it_is="Обзор открытого инструмента для видеомонтажа.",
+        why_it_matters="Помогает оценить его возможности и ограничения.",
+        business_summary="EDUCATIONAL: Автор объясняет возможности инструмента.",
+        risk_level="LOW",
+    )
+
+    text = render_telegram_long(canonical).text
+
+    assert "Что здесь за смысл" in text
+    assert "Что здесь за бизнес-модель" not in text
+    assert "EDUCATIONAL" not in text
+    assert canonical.business_summary.startswith("EDUCATIONAL:")
+
+
+def test_next_step_removes_skip_suffix_but_keeps_useful_action():
+    canonical = CanonicalContentResult(
+        title="Автоматизация YouTube",
+        topic="Software Tool",
+        summary="Обзор инструмента.",
+        what_it_is="Открытый инструмент для автоматизации YouTube.",
+        why_it_matters="Требует оценки API-расходов.",
+        actionable_steps=[
+            "Изучить репозиторий и рассчитать расходы на API; иначе пропустить."
+        ],
+        risk_level="LOW",
+    )
+
+    text = render_telegram_long(canonical).text
+
+    assert "Изучить репозиторий и рассчитать расходы на API" in text
+    assert "пропустить" not in text.casefold()
+
+
 def test_build_canonical_content_result_accepts_video_url():
     """Verify build_canonical_content_result accepts video_url and preserves it."""
     url = "https://www.instagram.com/reel/C7xyz123/"

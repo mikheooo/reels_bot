@@ -81,6 +81,26 @@ _TECHNICAL_REASON_RE = re.compile(
     r"^\s*(?P<label>[A-Z][A-Z0-9_]*)\s*(?:\(\s*\d+(?:[.,]\d+)?%\s*\))?\s*$"
 )
 
+_NEUTRAL_RISK_INTENTS = {"INFORM", "ENTERTAIN"}
+_TITLE_TRAILING_CONNECTORS = {
+    "а",
+    "без",
+    "в",
+    "для",
+    "и",
+    "из",
+    "к",
+    "на",
+    "но",
+    "о",
+    "об",
+    "от",
+    "по",
+    "при",
+    "с",
+    "через",
+}
+
 
 class OutputVariantType(str, Enum):
     TLDR = "TLDR"
@@ -238,6 +258,8 @@ def render_human_risk_explanation(
     for raw_label in risk_or_intent_labels:
         match = _TECHNICAL_REASON_RE.fullmatch(raw_label)
         label = match.group("label") if match else raw_label.strip().upper().replace(" ", "_")
+        if risk_level == "LOW" or label in _NEUTRAL_RISK_INTENTS:
+            continue
         explanation = HUMAN_LABEL_EXPLANATIONS.get(label)
         if category == "Business Idea":
             explanation = {
@@ -324,7 +346,7 @@ def build_canonical_content_result(
     if analysis and analysis.claims:
         for c in analysis.claims:
             cs = ClaimSummary(
-                statement=c.statement,
+                statement=(c.analysis_statement or c.statement).strip(),
                 status=c.status,
                 source_name=c.source_name,
                 source_url=c.source_url,
@@ -541,8 +563,50 @@ def render_human_title(canonical: CanonicalContentResult, max_words: int = 12) -
         flags=re.IGNORECASE,
     )
     title = re.sub(r"^заработка\b", "Заработок", title, flags=re.IGNORECASE)
+    title = re.sub(
+        r"^(?:видеоролик|видео|ролик)\s+с\s+(?:кратким\s+)?обзором\s+",
+        "Обзор ",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"^(?:видеоролик|видео|ролик)\s+с\s+демонстрацией\s+создания\s+",
+        "Создание ",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"^(?:видеоролик|видео|ролик)\s+с\s+демонстрацией\s+",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"^инструкция\s+по\s+подключению\s+",
+        "Подключение ",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"\s+через\s+режим\s+разработчика.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"^якобы\s+полученного\s+дохода\b",
+        "Заявленный доход",
+        title,
+        flags=re.IGNORECASE,
+    )
     title = re.sub(r"\bна\s+фриланс-бирже\b", "на", title, flags=re.IGNORECASE)
     title = re.sub(r":\s*использование\s+", " с ", title, flags=re.IGNORECASE)
+    title = re.sub(
+        r"\s+с\s+использованием\s+нейросети\s+(\S+)\s+для\s+написания\s+откликов",
+        r" с \1 для откликов",
+        title,
+        flags=re.IGNORECASE,
+    )
     title = re.sub(
         r"\s+для\s+генерации\s+откликов\s+заказчикам\s+и\s+запуск\s+"
         r"рекламных\s+кампаний\s+в\s+",
@@ -551,8 +615,46 @@ def render_human_title(canonical: CanonicalContentResult, max_words: int = 12) -
         flags=re.IGNORECASE,
     )
     title = re.sub(r"\s+по\s+готовым\s+шаблонам\.?$", "", title, flags=re.IGNORECASE)
+
+    # Prefer a complete leading clause over a mechanical twelve-word slice.
+    depth = 0
+    for index, char in enumerate(title):
+        if char in "([":
+            depth += 1
+        elif char in ")]" and depth:
+            depth -= 1
+        elif depth == 0 and char in ",;":
+            clause = title[:index].strip()
+            if 4 <= len(clause.split()) <= max_words:
+                title = clause
+                break
+
     words = title.strip(" .:;-—").split()
-    short = " ".join(words[:max_words]).rstrip(".,:;-—")
+    for index, word in enumerate(words, start=0):
+        remaining = len(words) - index - 1
+        if (
+            word.casefold().strip(".,:;()[]") == "и"
+            and index >= 5
+            and remaining >= 3
+        ):
+            words = words[:index]
+            break
+    if len(words) > max_words:
+        # A coordinated second idea is safer to omit than to cut mid-phrase.
+        for index, word in enumerate(words[:max_words], start=0):
+            if word.casefold().strip(".,:;()[]") == "и" and index >= 5:
+                words = words[:index]
+                break
+        else:
+            words = words[:max_words]
+
+    while words and words[-1].casefold().strip(".,:;()[]") in _TITLE_TRAILING_CONNECTORS:
+        words.pop()
+    short = " ".join(words).rstrip(".,:;-—")
+    if short.count("(") > short.count(")"):
+        complete = short.rsplit("(", 1)[0].rstrip(" .,:;-—")
+        if len(complete.split()) >= 4:
+            short = complete
     return short[:1].upper() + short[1:] if short else "Главное из ролика"
 
 
@@ -567,9 +669,22 @@ def render_human_business_explanation(business_summary: str) -> str:
     )
 
 
+def _business_presentation_heading(business_summary: str) -> str:
+    match = re.match(r"^([A-Z][A-Z0-9_]*):", business_summary.strip())
+    if match and match.group(1) in {"EDUCATIONAL", "UNCLEAR"}:
+        return "Что здесь за смысл"
+    return "Что здесь за бизнес-модель"
+
+
 def _render_next_step(step: str) -> str:
     cleaned = " ".join(step.strip().split())
     cleaned = re.sub(r"^Пропустить материал\.\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\s*[;,]?\s*(?:иначе\s+)?пропустить(?:\s+материал)?[.!]?\s*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(
         r"^При необходимости\s+", "Если тема интересна, сначала ", cleaned, flags=re.IGNORECASE
     )
@@ -683,8 +798,9 @@ def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
     # 7. Human business model or, when Business Check was not selected by the
     # existing policy, a plain-language meaning from the canonical verdict.
     if canonical.business_summary:
+        heading = _business_presentation_heading(canonical.business_summary)
         sections.append(
-            "💼 **Что здесь за бизнес-модель**\n\n"
+            f"💼 **{heading}**\n\n"
             + render_human_business_explanation(canonical.business_summary)
         )
     elif canonical.summary.strip():
