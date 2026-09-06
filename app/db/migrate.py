@@ -65,6 +65,42 @@ async def apply_migrations(engine) -> None:
             # them so they no longer imply an active scheduler capability.
             "UPDATE jobs SET audit_state = 'DEFERRED_LEGACY' WHERE audit_scheduled_at IS NOT NULL AND audit_state IS NULL;",
             "UPDATE jobs SET audit_state = 'NOT_SCHEDULED' WHERE audit_scheduled_at IS NULL AND audit_state IS NULL;",
+            """
+            CREATE TABLE IF NOT EXISTS content_packages (
+                id VARCHAR PRIMARY KEY,
+                job_id VARCHAR NOT NULL REFERENCES jobs(id),
+                source_url VARCHAR NOT NULL,
+                contract_version VARCHAR NOT NULL DEFAULT 'content_package_v1',
+                status VARCHAR NOT NULL DEFAULT 'GENERATED',
+                language_context JSONB,
+                router_result JSONB,
+                priority_result JSONB,
+                canonical_content JSONB NOT NULL,
+                output_variants JSONB NOT NULL,
+                distribution_targets JSONB NOT NULL,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS content_deliveries (
+                id VARCHAR PRIMARY KEY,
+                package_id VARCHAR NOT NULL REFERENCES content_packages(id),
+                target VARCHAR NOT NULL,
+                variant VARCHAR NOT NULL,
+                attempt_id INTEGER NOT NULL DEFAULT 1,
+                status VARCHAR NOT NULL,
+                external_id VARCHAR,
+                idempotency_key VARCHAR UNIQUE NOT NULL,
+                error_code VARCHAR,
+                error_message TEXT,
+                started_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                finished_at TIMESTAMP WITHOUT TIME ZONE
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_content_packages_job_id ON content_packages (job_id);",
+            "CREATE INDEX IF NOT EXISTS ix_content_deliveries_package_id ON content_deliveries (package_id);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_content_deliveries_idempotency_key ON content_deliveries (idempotency_key);",
         ]
         for q in queries:
             await conn.execute(text(q))

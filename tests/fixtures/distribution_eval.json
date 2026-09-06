@@ -1,0 +1,386 @@
+[
+  {
+    "scenario_id": "case_01_high_priority_how_to",
+    "description": "High priority technical HOW_TO package with automatic Telegram delivery and pending external manual approval",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Интеграция n8n и PostgreSQL для автоматизации",
+      "topic": "Автоматизация баз данных",
+      "summary": "Пошаговая настройка узла Postgres в n8n для автоматического сохранения лидов.",
+      "what_it_is": "Руководство по связке n8n с базой данных Postgres через стандартный узел.",
+      "why_it_matters": "Ускоряет обработку лидов без необходимости писать отдельный микросервис.",
+      "key_points": [
+        "Установите узел Postgres в n8n",
+        "Настройте параметры подключения с SSL",
+        "Используйте параметризованные запросы против SQL-инъекций"
+      ],
+      "actionable_steps": [
+        "Создать пользователя с ограниченными правами",
+        "Протестировать тестовый вебхук"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.88,
+      "priority_reasons": ["Actionable engineering workflow", "High practical utility"],
+      "citations": ["https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.postgres/"]
+    },
+    "owner_user_id": 1001,
+    "attempt_user_id": 1001,
+    "action": "CREATE_AND_DELIVER_TELEGRAM",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "DELIVERED",
+      "X": "PENDING_APPROVAL",
+      "THREADS": "PENDING_APPROVAL",
+      "YOUTUBE_COMMUNITY": "PENDING_APPROVAL"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_02_low_priority_content",
+    "description": "Low-priority lifestyle/humor content, suppressed from Telegram channel, delivered only to user",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Утренний кофе и продуктивность",
+      "topic": "Лайфстайл",
+      "summary": "Забавные рассуждения о том, как кофе помогает проснуться утром.",
+      "what_it_is": "Развлекательное видео о кофе и утренней рутине.",
+      "why_it_matters": "Развлекательный контент без технической или бизнес-ценности.",
+      "key_points": ["Кофе бодрит", "Пейте воду"],
+      "actionable_steps": [],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "LOW",
+      "priority_score": 0.20,
+      "priority_reasons": ["No technical substance", "Pure entertainment"],
+      "citations": []
+    },
+    "owner_user_id": 1002,
+    "attempt_user_id": 1002,
+    "action": "CREATE_LOW_PRIORITY",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "NOT_RENDERABLE",
+      "X": "PENDING_APPROVAL",
+      "THREADS": "PENDING_APPROVAL",
+      "YOUTUBE_COMMUNITY": "PENDING_APPROVAL"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_03_high_risk_fact_checked",
+    "description": "High-risk medical or safety claim; critical disclaimers must be preserved across all rendered targets",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Опасный метод экспресс-детокса",
+      "topic": "Здоровье и медицина",
+      "summary": "В видео утверждается, что прием концентрированного раствора соли очищает организм.",
+      "what_it_is": "Непроверенный совет по детоксу через солевой раствор.",
+      "why_it_matters": "Употребление концентрированной соли опасно для жизни и вызывает отек мозга.",
+      "key_points": ["Утверждение о пользе не подтверждено", "Метод несет прямой риск для здоровья"],
+      "disputed_claims": [
+        {
+          "statement": "Концентрированная соль безопасна для очищения кишечника",
+          "status": "опровергнуто",
+          "source_name": "ВОЗ",
+          "source_url": "https://who.int"
+        }
+      ],
+      "actionable_steps": ["Не применять данный метод"],
+      "risk_level": "HIGH",
+      "risk_reasons": ["Прямой риск электролитного дисбаланса и гипернатриемии"],
+      "critical_disclaimers": ["ВНИМАНИЕ: Опасно для здоровья! Проконсультируйтесь с врачом."],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "AMBIGUOUS",
+      "priority_score": 0.50,
+      "priority_reasons": ["High risk requiring fact-checking"],
+      "citations": ["https://who.int"]
+    },
+    "owner_user_id": 1003,
+    "attempt_user_id": 1003,
+    "action": "CHECK_HIGH_RISK_WARNINGS",
+    "expected_package_status": "REVIEW_REQUIRED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "PENDING_APPROVAL",
+      "TELEGRAM_CHANNEL": "PENDING_APPROVAL",
+      "X": "PENDING_APPROVAL",
+      "THREADS": "PENDING_APPROVAL",
+      "YOUTUBE_COMMUNITY": "PENDING_APPROVAL"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_04_x_not_renderable",
+    "description": "Complex technical analysis exceeding 280 characters that cannot be safely compressed without losing critical safety warnings",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Комплексный протокол аудита смарт-контрактов",
+      "topic": "Криптография и безопасность",
+      "summary": "Критический анализ: обнаружена критическая уязвимость reentrancy, позволяющая злоумышленникам полностью опустошить пул ликвидности без авторизации.",
+      "what_it_is": "Детальный аудит смарт-контракта с формальной верификацией инвариантов состояний.",
+      "why_it_matters": "Предотвращает кражу средств из протоколов децентрализованных финансов.",
+      "key_points": [
+        "Проверка Checks-Effects-Interactions паттерна на всех внешних вызовах"
+      ],
+      "disputed_claims": [
+        {
+          "statement": "Использование низкоуровневых ассемблерных вставок inline assembly в solidity полностью гарантирует защиту от реентранси атак и повторного входа в смарт-контракт без использования мьютексов.",
+          "status": "опровергнуто",
+          "source_name": "OpenZeppelin Security",
+          "source_url": "https://openzeppelin.com"
+        }
+      ],
+      "actionable_steps": [
+        "Интегрировать ReentrancyGuard"
+      ],
+      "risk_level": "HIGH",
+      "risk_reasons": ["Критические уязвимости смарт-контрактов ведут к безвозвратной потере средств"],
+      "critical_disclaimers": ["ВНИМАНИЕ: Ошибки в коде ведут к немедленной потере депозитов. Требуется профессиональный независимый аудит."],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.95,
+      "priority_reasons": ["Critical security engineering"],
+      "citations": ["https://openzeppelin.com"]
+    },
+    "owner_user_id": 1004,
+    "attempt_user_id": 1004,
+    "action": "VALIDATE_NOT_RENDERABLE",
+    "expected_package_status": "REVIEW_REQUIRED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "PENDING_APPROVAL",
+      "TELEGRAM_CHANNEL": "PENDING_APPROVAL",
+      "X": "NOT_RENDERABLE",
+      "THREADS": "PENDING_APPROVAL",
+      "YOUTUBE_COMMUNITY": "PENDING_APPROVAL"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_05_duplicate_channel_url",
+    "description": "Reel URL already published to Telegram channel previously; channel target marked SKIPPED_DUPLICATE",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Оптимизация запросов PostgreSQL",
+      "topic": "Базы данных",
+      "summary": "Как построить правильный составной индекс в PostgreSQL.",
+      "what_it_is": "Инструкция по B-Tree индексам.",
+      "why_it_matters": "Ускоряет чтение в 100 раз.",
+      "key_points": ["Порядок колонок важен", "Используйте EXPLAIN ANALYZE"],
+      "actionable_steps": ["Проверить медленные запросы"],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.85,
+      "priority_reasons": ["Database performance"],
+      "citations": []
+    },
+    "owner_user_id": 1005,
+    "attempt_user_id": 1005,
+    "action": "DEDUP_CHANNEL_SKIP",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "SKIPPED_DUPLICATE",
+      "X": "PENDING_APPROVAL",
+      "THREADS": "PENDING_APPROVAL",
+      "YOUTUBE_COMMUNITY": "PENDING_APPROVAL"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_06_approved_external_target",
+    "description": "Owner approves external distribution targets; targets transition to APPROVED_NOT_CONNECTED (Level A)",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Как ускорить запуск Docker контейнеров",
+      "topic": "DevOps",
+      "summary": "Кэширование слоев сборки в Dockerfile и Multi-stage builds.",
+      "what_it_is": "Практический совет по оптимизации образов Docker.",
+      "why_it_matters": "Сокращает время деплоя и экономит место на диске.",
+      "key_points": ["Multi-stage builds", "Кэш зависимостей"],
+      "actionable_steps": ["Разделить сборку и рантайм"],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.80,
+      "priority_reasons": ["DevOps optimization"],
+      "citations": []
+    },
+    "owner_user_id": 1006,
+    "attempt_user_id": 1006,
+    "action": "APPROVE_EXTERNAL",
+    "expected_package_status": "DELIVERED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "DELIVERED",
+      "X": "APPROVED_NOT_CONNECTED",
+      "THREADS": "APPROVED_NOT_CONNECTED",
+      "YOUTUBE_COMMUNITY": "APPROVED_NOT_CONNECTED"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_07_rejected_package",
+    "description": "Owner rejects package; all non-delivered targets transition to REJECTED, blocking publishing",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Сомнительный совет по инвестициям",
+      "topic": "Финансы",
+      "summary": "Призыв вложить деньги в пирамиду под 100% в месяц.",
+      "what_it_is": "Финансовая схема с признаками мошенничества.",
+      "why_it_matters": "Высокий риск потери средств.",
+      "key_points": ["Нереалистичная доходность"],
+      "actionable_steps": [],
+      "risk_level": "HIGH",
+      "risk_reasons": ["Финансовая пирамида"],
+      "critical_disclaimers": ["ВНИМАНИЕ: Высокий риск мошенничества."],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "LOW",
+      "priority_score": 0.10,
+      "priority_reasons": ["Scam risk"],
+      "citations": []
+    },
+    "owner_user_id": 1007,
+    "attempt_user_id": 1007,
+    "action": "REJECT_PACKAGE",
+    "expected_package_status": "REJECTED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "REJECTED",
+      "X": "REJECTED",
+      "THREADS": "REJECTED",
+      "YOUTUBE_COMMUNITY": "REJECTED"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_08_retryable_delivery_failure",
+    "description": "Transient network timeout occurs during publishing; correctly classified as RETRYABLE_ERROR without permanent failure",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Настройка Nginx Reverse Proxy",
+      "topic": "Системное администрирование",
+      "summary": "Конфигурация Nginx для проксирования запросов к бэкенду с websockets.",
+      "what_it_is": "Гайд по настройке Nginx.",
+      "why_it_matters": "Базовая инфраструктурная задача.",
+      "key_points": ["Proxy_pass", "Upgrade header для вебсокетов"],
+      "actionable_steps": ["Добавить заголовки в location"],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.82,
+      "priority_reasons": ["Sysadmin utility"],
+      "citations": []
+    },
+    "owner_user_id": 1008,
+    "attempt_user_id": 1008,
+    "action": "RETRYABLE_ERROR_CHECK",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "DELIVERED"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_09_double_approve_idempotency",
+    "description": "Owner clicks approve twice in rapid succession; second click is idempotent with zero duplicate records created",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Архитектура Clean Architecture в Python",
+      "topic": "Разработка ПО",
+      "summary": "Разделение слоев доменной логики, юзкейсов и адаптеров.",
+      "what_it_is": "Архитектурный шаблон для масштабируемых сервисов.",
+      "why_it_matters": "Облегчает тестирование и поддержку кода.",
+      "key_points": ["Инверсия зависимостей", "Чистый домен"],
+      "actionable_steps": ["Вынести доменные модели из ORM"],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.90,
+      "priority_reasons": ["Software engineering design"],
+      "citations": []
+    },
+    "owner_user_id": 1009,
+    "attempt_user_id": 1009,
+    "action": "DOUBLE_APPROVE_IDEMPOTENCY",
+    "expected_package_status": "DELIVERED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "DELIVERED",
+      "TELEGRAM_CHANNEL": "DELIVERED",
+      "X": "APPROVED_NOT_CONNECTED",
+      "THREADS": "APPROVED_NOT_CONNECTED",
+      "YOUTUBE_COMMUNITY": "APPROVED_NOT_CONNECTED"
+    },
+    "expected_unauthorized_error": false,
+    "expected_duplicate_call_safe": true
+  },
+  {
+    "scenario_id": "case_10_unauthorized_approval_attempt",
+    "description": "Non-owner user attempts to approve package; rejected immediately with UnauthorizedApprovalError and zero state changes",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Безопасное хранение секретов в Kubernetes",
+      "topic": "DevSecOps",
+      "summary": "Использование HashiCorp Vault или External Secrets Operator вместо plain base64 secrets.",
+      "what_it_is": "Руководство по безопасности секретов в k8s кластерах.",
+      "why_it_matters": "Предотвращает утечку API ключей и паролей базы данных.",
+      "key_points": ["KMS шифрование", "External Secrets"],
+      "actionable_steps": ["Настроить Vault injector"],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.92,
+      "priority_reasons": ["Security best practices"],
+      "citations": []
+    },
+    "owner_user_id": 1010,
+    "attempt_user_id": 9999,
+    "action": "UNAUTHORIZED_APPROVAL",
+    "expected_package_status": "REVIEW_REQUIRED",
+    "expected_target_statuses": {
+      "TELEGRAM_USER": "PENDING_APPROVAL",
+      "TELEGRAM_CHANNEL": "PENDING_APPROVAL",
+      "X": "PENDING_APPROVAL",
+      "THREADS": "PENDING_APPROVAL",
+      "YOUTUBE_COMMUNITY": "PENDING_APPROVAL"
+    },
+    "expected_unauthorized_error": true,
+    "expected_duplicate_call_safe": true
+  }
+]

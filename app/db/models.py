@@ -1,4 +1,13 @@
-from sqlalchemy import JSON, BigInteger, Column, DateTime, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.sql import func
 
 from app.db.database import Base
@@ -57,3 +66,38 @@ class Task(Base):
     status = Column(String, default='PENDING')  # PENDING / IN_PROGRESS / DONE
     created_at = Column(DateTime, server_default=func.now())
     completed_at = Column(DateTime, nullable=True)
+
+
+class ContentPackageModel(Base):
+    __tablename__ = "content_packages"
+
+    id = Column(String, primary_key=True)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    source_url = Column(String, nullable=False)
+    contract_version = Column(String, default="content_package_v1", nullable=False)
+    status = Column(String, default="GENERATED", nullable=False)
+    language_context = Column(JSON, nullable=True)
+    router_result = Column(JSON, nullable=True)
+    priority_result = Column(JSON, nullable=True)
+    canonical_content = Column(JSON, nullable=False)
+    output_variants = Column(JSON, nullable=False)
+    distribution_targets = Column(JSON, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ContentDeliveryModel(Base):
+    __tablename__ = "content_deliveries"
+
+    id = Column(String, primary_key=True)
+    package_id = Column(String, ForeignKey("content_packages.id"), nullable=False, index=True)
+    target = Column(String, nullable=False)
+    variant = Column(String, nullable=False)
+    attempt_id = Column(Integer, default=1, nullable=False)
+    status = Column(String, nullable=False)
+    external_id = Column(String, nullable=True)
+    idempotency_key = Column(String, unique=True, nullable=False)
+    error_code = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, server_default=func.now())
+    finished_at = Column(DateTime, nullable=True)

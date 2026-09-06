@@ -8,6 +8,7 @@ from arq.connections import RedisSettings
 from sqlalchemy import select
 
 from app.bot.analysis_view import DETAIL_LABELS, analysis_keyboard
+from app.bot.package_handlers import handle_package_callback
 from app.bot.transcript_view import LEGACY_TEXT, send_full_transcript, transcript_button
 from app.core.config import settings
 from app.core.normalizer import clean_url, is_valid_url
@@ -216,6 +217,9 @@ async def analysis_detail(callback: types.CallbackQuery):
             chunk = chunk[:split_at]
         await callback.message.answer(chunk)
         remaining = remaining[len(chunk):].strip()
+
+
+router.callback_query(F.data.startswith("pkg:"))(handle_package_callback)
 
 
 @router.message()

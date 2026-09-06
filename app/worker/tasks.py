@@ -20,9 +20,19 @@ from app.bot.analysis_view import analysis_keyboard
 from app.core.config import settings
 from app.core.normalizer import clean_url
 from app.db.database import AsyncSessionLocal
-from app.db.models import Job, Task
+from app.db.models import ContentDeliveryModel, ContentPackageModel, Job, Task
 from app.worker.business_check import format_business_check_markdown, run_business_check
 from app.worker.compact_renderer import build_detail_sections, render_compact_analysis
+from app.worker.content_package import (
+    ContentPackage,
+    DeliveryOutcome,
+    DeliveryRecord,
+    PackageStatus,
+    TargetDeliveryStatus,
+    TargetPlatform,
+    build_content_package,
+    transition_package_status,
+)
 from app.worker.content_router import fallback_route, route_content
 from app.worker.factcheck import (
     extract_claims,
@@ -33,6 +43,8 @@ from app.worker.factcheck import (
 from app.worker.gemini_raw_log import key_alias, log_raw
 from app.worker.language import language_delivery_outcome, resolve_language_context
 from app.worker.output_variants import (
+    CanonicalContentResult,
+    OutputVariantType,
     build_canonical_content_result,
     generate_all_variants,
     resolve_telegram_delivery_payload,
@@ -98,6 +110,66 @@ async def update_job_status(job_id: str, status: str, **kwargs):
             for k, v in kwargs.items():
                 setattr(job, k, v)
             await session.commit()
+
+
+async def persist_content_package_models(pkg: ContentPackage) -> None:
+    """Persist or update ContentPackage and its DeliveryRecords in PostgreSQL."""
+    try:
+        async with AsyncSessionLocal() as session:
+            existing = await session.get(ContentPackageModel, pkg.package_id)
+            if existing:
+                existing.status = pkg.approval_state.value
+                existing.distribution_targets = {
+                    k: v.model_dump(mode="json") for k, v in pkg.distribution_targets.items()
+                }
+                existing.updated_at = datetime.utcnow()
+            else:
+                model = ContentPackageModel(
+                    id=pkg.package_id,
+                    job_id=pkg.job_id,
+                    source_url=pkg.source_url,
+                    contract_version=pkg.contract_version,
+                    status=pkg.approval_state.value,
+                    language_context=pkg.language_context,
+                    router_result=pkg.router_result,
+                    priority_result=pkg.priority_result,
+                    canonical_content=pkg.canonical_content.model_dump(mode="json"),
+                    output_variants=pkg.output_variants.model_dump(mode="json"),
+                    distribution_targets={
+                        k: v.model_dump(mode="json") for k, v in pkg.distribution_targets.items()
+                    },
+                )
+                session.add(model)
+
+            for record in pkg.delivery_records:
+                rec_existing = await session.get(ContentDeliveryModel, record.delivery_id)
+                if not rec_existing:
+                    rec_model = ContentDeliveryModel(
+                        id=record.delivery_id,
+                        package_id=record.package_id,
+                        target=record.target.value,
+                        variant=record.variant.value,
+                        attempt_id=record.attempt_id,
+                        status=record.status.value,
+                        external_id=record.external_id,
+                        idempotency_key=record.idempotency_key,
+                        error_code=record.error_code,
+                        error_message=record.error_message,
+                        started_at=record.started_at,
+                        finished_at=record.finished_at,
+                    )
+                    session.add(rec_model)
+                else:
+                    rec_existing.status = record.status.value
+                    rec_existing.external_id = record.external_id
+                    rec_existing.error_code = record.error_code
+                    rec_existing.error_message = record.error_message
+                    rec_existing.finished_at = record.finished_at
+
+            await session.commit()
+    except Exception as e:
+        logger.error(f"Failed to persist ContentPackage {pkg.package_id}: {e}")
+
 
 import json as _json
 
@@ -1066,6 +1138,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
 
         output_variants_payload = None
         output_variants_data = None
+        canonical_result = None
         try:
             canonical_result = build_canonical_content_result(
                 route=route,
@@ -1083,6 +1156,21 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             logger.error(f"Output variants generation failed: {variants_err}")
             output_variants_data = None
 
+        content_package = None
+        if canonical_result and output_variants_payload:
+            try:
+                content_package = build_content_package(
+                    job_id=job_id,
+                    source_url=url,
+                    canonical=canonical_result,
+                    variants=output_variants_payload,
+                    language_context=language_context.model_dump(),
+                    router_decision=route.model_dump(),
+                    priority_result=priority.model_dump(),
+                )
+            except Exception as pkg_err:
+                logger.error(f"Failed to build ContentPackage for job {job_id}: {pkg_err}")
+
         user_delivery_text, output_variants_delivery, delivery_mode = resolve_telegram_delivery_payload(
             output_variants_payload, analysis
         )
@@ -1090,6 +1178,14 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         if qa_res is not None and not qa_res.approved:
             msg = "⚠️ Строгая проверка не пройдена. Автопубликация и создание задачи заблокированы.\nПричины:\n- " + "\n- ".join(qa_res.reasons or [])
             logger.warning(msg)
+            if content_package:
+                try:
+                    transition_package_status(
+                        content_package, PackageStatus.REVIEW_REQUIRED, "Strict QA gate failed"
+                    )
+                    await persist_content_package_models(content_package)
+                except Exception as pkg_save_err:
+                    logger.warning(f"Could not persist content_package on QA rejection: {pkg_save_err}")
             qa_reasons_data = {
                 "analysis_json": analysis_obj.model_dump(),
                 "language": language_context.model_dump(),
@@ -1097,6 +1193,11 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 "priority": priority.model_dump(),
                 "policy": combined_policy.model_dump(),
                 "output_variants": output_variants_data,
+                "content_package": {
+                    "package_id": content_package.package_id,
+                    "status": content_package.approval_state.value,
+                    "contract_version": content_package.contract_version,
+                } if content_package else None,
                 "detail_sections": detail_sections,
                 "audit_history": [],
             }
@@ -1127,6 +1228,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             "language": language_delivery_outcome(language_context),
             "priority": priority_delivery_outcome(priority),
             "output_variants": output_variants_delivery,
+            "content_package": "CREATED" if content_package else "FAILED",
             "user": "PENDING",
             "channel": "NOT_APPLICABLE",
             "plan": "NOT_APPLICABLE",
@@ -1165,6 +1267,11 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             "language": language_context.model_dump(),
             **policy_observability_payload(route, combined_policy),
             "output_variants": output_variants_data,
+            "content_package": {
+                "package_id": content_package.package_id,
+                "status": content_package.approval_state.value,
+                "contract_version": content_package.contract_version,
+            } if content_package else None,
             "specialized_analysis": specialized.model_dump() if specialized else None,
             "detail_sections": detail_sections,
             "delivery_status": delivery_status,
@@ -1190,12 +1297,28 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         try:
             msg = await bot.send_video(**send_kwargs)
             # Compact answer is one message; detailed layers stay behind callbacks.
-            await bot.send_message(
+            msg_user = await bot.send_message(
                 chat_id=user_id,
                 text=user_delivery_text,
                 reply_markup=analysis_keyboard(job_id, list(detail_sections)),
             )
             delivery_status["user"] = "SUCCEEDED" if delivery_mode == "TELEGRAM_LONG" else "SUCCEEDED_FALLBACK"
+            if content_package:
+                tg_user_t = content_package.distribution_targets.get(TargetPlatform.TELEGRAM_USER.value)
+                if tg_user_t:
+                    tg_user_t.status = TargetDeliveryStatus.DELIVERED
+                    tg_user_t.delivered_at = datetime.utcnow()
+                    tg_user_t.external_id = str(msg_user.message_id)
+                rec = DeliveryRecord.create(
+                    package_id=content_package.package_id,
+                    target=TargetPlatform.TELEGRAM_USER,
+                    variant=OutputVariantType.TELEGRAM_LONG,
+                    attempt_id=1,
+                    approval_state=content_package.approval_state,
+                    status=DeliveryOutcome.SUCCEEDED,
+                    external_id=str(msg_user.message_id),
+                )
+                content_package.delivery_records.append(rec)
         except Exception as user_delivery_err:
             delivery_status["user"] = f"FAILED:{type(user_delivery_err).__name__}"
             await update_job_status(job_id, "PROCESSING", delivery_status=delivery_status)
@@ -1238,9 +1361,26 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 "Channel publication suppressed by priority gate (%s).",
                 priority.decision,
             )
+            if content_package:
+                tg_ch_t = content_package.distribution_targets.get(TargetPlatform.TELEGRAM_CHANNEL.value)
+                if tg_ch_t:
+                    tg_ch_t.status = TargetDeliveryStatus.NOT_RENDERABLE
         elif already_published:
             delivery_status["channel"] = "SKIPPED_DUPLICATE"
             logger.info("Skipping channel publish (duplicate video). User already received the analysis above.")
+            if content_package:
+                tg_ch_t = content_package.distribution_targets.get(TargetPlatform.TELEGRAM_CHANNEL.value)
+                if tg_ch_t:
+                    tg_ch_t.status = TargetDeliveryStatus.SKIPPED_DUPLICATE
+                rec = DeliveryRecord.create(
+                    package_id=content_package.package_id,
+                    target=TargetPlatform.TELEGRAM_CHANNEL,
+                    variant=OutputVariantType.TELEGRAM_LONG,
+                    attempt_id=1,
+                    approval_state=content_package.approval_state,
+                    status=DeliveryOutcome.SKIPPED_DUPLICATE,
+                )
+                content_package.delivery_records.append(rec)
         elif dedup_check_ok:
             channel_bot = None
             try:
@@ -1261,9 +1401,40 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 await send_long_text(channel_bot, channel_id, summary)
                 delivery_status["channel"] = "SUCCEEDED"
                 logger.info(f"Published to channel successfully. msg_id={channel_msg_id}")
+                if content_package:
+                    tg_ch_t = content_package.distribution_targets.get(TargetPlatform.TELEGRAM_CHANNEL.value)
+                    if tg_ch_t:
+                        tg_ch_t.status = TargetDeliveryStatus.DELIVERED
+                        tg_ch_t.delivered_at = datetime.utcnow()
+                        tg_ch_t.external_id = str(channel_msg_id)
+                    rec = DeliveryRecord.create(
+                        package_id=content_package.package_id,
+                        target=TargetPlatform.TELEGRAM_CHANNEL,
+                        variant=OutputVariantType.TELEGRAM_LONG,
+                        attempt_id=1,
+                        approval_state=content_package.approval_state,
+                        status=DeliveryOutcome.SUCCEEDED,
+                        external_id=str(channel_msg_id),
+                    )
+                    content_package.delivery_records.append(rec)
             except Exception as e:
                 delivery_status["channel"] = f"FAILED:{type(e).__name__}"
                 logger.error(f"Channel publish failed: {e}")
+                if content_package:
+                    tg_ch_t = content_package.distribution_targets.get(TargetPlatform.TELEGRAM_CHANNEL.value)
+                    if tg_ch_t:
+                        tg_ch_t.status = TargetDeliveryStatus.FAILED
+                        tg_ch_t.error_message = str(e)
+                    rec = DeliveryRecord.create(
+                        package_id=content_package.package_id,
+                        target=TargetPlatform.TELEGRAM_CHANNEL,
+                        variant=OutputVariantType.TELEGRAM_LONG,
+                        attempt_id=1,
+                        approval_state=content_package.approval_state,
+                        status=DeliveryOutcome.FAILED,
+                        error_message=str(e),
+                    )
+                    content_package.delivery_records.append(rec)
             finally:
                 if channel_bot is not None:
                     await channel_bot.session.close()
@@ -1298,6 +1469,17 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         except Exception as e:
             delivery_status["task_db"] = f"FAILED:{type(e).__name__}"
             logger.error(f"Failed to save task to DB: {e}")
+
+        if content_package:
+            try:
+                transition_package_status(
+                    content_package,
+                    PackageStatus.PARTIALLY_DELIVERED,
+                    "Telegram delivered, external platforms pending review",
+                )
+            except Exception:
+                pass
+            await persist_content_package_models(content_package)
 
         qa_reasons_data["delivery_status"] = delivery_status
         done_kwargs["qa_reasons"] = qa_reasons_data
