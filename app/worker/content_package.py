@@ -91,6 +91,11 @@ class DistributionTarget(BaseModel):
     rendered_payload: str | None = None
 
 
+def _utc_now() -> datetime.datetime:
+    """Return timezone-naive UTC datetime for consistent asyncpg/PostgreSQL storage."""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
 class DeliveryRecord(BaseModel):
     delivery_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     package_id: str
@@ -100,9 +105,7 @@ class DeliveryRecord(BaseModel):
     approval_state: PackageStatus
     status: DeliveryOutcome
     external_id: str | None = None
-    started_at: datetime.datetime = Field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
-    )
+    started_at: datetime.datetime = Field(default_factory=_utc_now)
     finished_at: datetime.datetime | None = None
     error_code: str | None = None
     error_message: str | None = None
@@ -133,8 +136,7 @@ class DeliveryRecord(BaseModel):
             external_id=external_id,
             error_code=error_code,
             error_message=error_message,
-            finished_at=finished_at
-            or datetime.datetime.now(datetime.timezone.utc),
+            finished_at=finished_at or _utc_now(),
             idempotency_key=key,
         )
 
@@ -144,10 +146,9 @@ class ContentPackage(BaseModel):
     job_id: str
     source_url: str
     contract_version: str = CONTRACT_VERSION
-    created_at: datetime.datetime = Field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc)
-    )
+    created_at: datetime.datetime = Field(default_factory=_utc_now)
     language_context: dict[str, Any] = Field(default_factory=dict)
+
     router_result: dict[str, Any] = Field(default_factory=dict)
     priority_result: dict[str, Any] = Field(default_factory=dict)
     canonical_content: CanonicalContentResult

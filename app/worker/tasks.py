@@ -7,7 +7,7 @@ import shutil
 import time
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import google.generativeai as genai
 import googleapiclient.http
@@ -112,9 +112,18 @@ async def update_job_status(job_id: str, status: str, **kwargs):
             await session.commit()
 
 
+def _to_naive_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 async def persist_content_package_models(pkg: ContentPackage) -> None:
     """Persist or update ContentPackage and its DeliveryRecords in PostgreSQL."""
     try:
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         async with AsyncSessionLocal() as session:
             existing = await session.get(ContentPackageModel, pkg.package_id)
             if existing:
@@ -122,7 +131,7 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                 existing.distribution_targets = {
                     k: v.model_dump(mode="json") for k, v in pkg.distribution_targets.items()
                 }
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = now_naive
             else:
                 model = ContentPackageModel(
                     id=pkg.package_id,
@@ -138,6 +147,8 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                     distribution_targets={
                         k: v.model_dump(mode="json") for k, v in pkg.distribution_targets.items()
                     },
+                    created_at=_to_naive_utc(pkg.created_at) or now_naive,
+                    updated_at=now_naive,
                 )
                 session.add(model)
 
@@ -155,8 +166,8 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                         idempotency_key=record.idempotency_key,
                         error_code=record.error_code,
                         error_message=record.error_message,
-                        started_at=record.started_at,
-                        finished_at=record.finished_at,
+                        started_at=_to_naive_utc(record.started_at) or now_naive,
+                        finished_at=_to_naive_utc(record.finished_at),
                     )
                     session.add(rec_model)
                 else:
@@ -164,11 +175,12 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                     rec_existing.external_id = record.external_id
                     rec_existing.error_code = record.error_code
                     rec_existing.error_message = record.error_message
-                    rec_existing.finished_at = record.finished_at
+                    rec_existing.finished_at = _to_naive_utc(record.finished_at)
 
             await session.commit()
     except Exception as e:
         logger.error(f"Failed to persist ContentPackage {pkg.package_id}: {e}")
+
 
 
 import json as _json

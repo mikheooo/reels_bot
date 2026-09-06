@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import types
 from sqlalchemy import select
@@ -27,7 +27,17 @@ from app.worker.output_variants import CanonicalContentResult
 logger = logging.getLogger(__name__)
 
 
+def _to_naive_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+
 async def handle_package_callback(callback: types.CallbackQuery) -> None:
+
     """Handle all 'pkg:*' callback queries with strict ownership verification."""
     data = callback.data or ""
     parts = data.split(":")
@@ -158,7 +168,7 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
             pkg_row.distribution_targets = {
                 k: v.model_dump(mode="json") for k, v in pkg_obj.distribution_targets.items()
             }
-            pkg_row.updated_at = datetime.utcnow()
+            pkg_row.updated_at = _to_naive_utc(datetime.now(timezone.utc))
 
             for r in new_recs:
                 deliv_model = ContentDeliveryModel(
@@ -172,10 +182,11 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                     idempotency_key=r.idempotency_key,
                     error_code=r.error_code,
                     error_message=r.error_message,
-                    started_at=r.started_at,
-                    finished_at=r.finished_at,
+                    started_at=_to_naive_utc(r.started_at) or _to_naive_utc(datetime.now(timezone.utc)),
+                    finished_at=_to_naive_utc(r.finished_at),
                 )
                 session.add(deliv_model)
+
 
             await session.commit()
             await callback.answer("✅ Внешние платформы одобрены (Level A: готовы к экспорту)!")
@@ -230,7 +241,7 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
             pkg_row.distribution_targets = {
                 k: v.model_dump(mode="json") for k, v in pkg_obj.distribution_targets.items()
             }
-            pkg_row.updated_at = datetime.utcnow()
+            pkg_row.updated_at = _to_naive_utc(datetime.now(timezone.utc))
             await session.commit()
 
             await callback.answer("❌ Контент-пакет отклонён.")
