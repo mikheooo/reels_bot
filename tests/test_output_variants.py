@@ -141,6 +141,7 @@ def test_telegram_long_generated_correctly():
     assert res.character_count <= VARIANT_CONSTRAINTS[OutputVariantType.TELEGRAM_LONG].max_length
     assert "💡 **Быстрый старт бота**" in res.text
     assert "Короткий вывод" in res.text
+    assert "Что здесь за смысл" in res.text
     assert "Разбор:" not in res.text
 
 

@@ -680,11 +680,16 @@ def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
     if len(fact_lines) > 1:
         sections.append("\n".join(fact_lines))
 
-    # 7. Human business meaning; canonical enum remains in persistence.
+    # 7. Human business model or, when Business Check was not selected by the
+    # existing policy, a plain-language meaning from the canonical verdict.
     if canonical.business_summary:
         sections.append(
             "💼 **Что здесь за бизнес-модель**\n\n"
             + render_human_business_explanation(canonical.business_summary)
+        )
+    elif canonical.summary.strip():
+        sections.append(
+            "💼 **Что здесь за смысл**\n\n" + _compact_text(canonical.summary, 420)
         )
 
     # 8. One useful next step.
