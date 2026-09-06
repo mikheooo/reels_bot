@@ -4,6 +4,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -189,4 +190,47 @@ class AuditEventModel(Base):
     new_hash = Column(String, nullable=False)
     payload_text = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class OutcomeObservationModel(Base):
+    __tablename__ = "outcome_observations"
+
+    id = Column(String, primary_key=True)
+    outcome_id = Column(String, unique=True, nullable=False)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    package_id = Column(String, ForeignKey("content_packages.id"), nullable=False, index=True)
+    publication_key = Column(String, nullable=False, index=True)
+    target = Column(String, nullable=False)
+    variant_type = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    router_primary_category = Column(String, nullable=True)
+    router_risk_level = Column(String, nullable=True)
+    priority_score = Column(Float, nullable=True)
+    priority_band = Column(String, nullable=True)
+    language_code = Column(String, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    audit_horizon = Column(String, nullable=False, index=True)
+    audit_snapshot_id = Column(String, ForeignKey("audit_snapshots.id"), nullable=False, index=True)
+    metrics = Column(JSON, nullable=False, default=dict)
+    derived_metrics = Column(JSON, nullable=False, default=dict)
+    content_integrity_status = Column(String, nullable=False)
+    data_quality_status = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class CalibrationRunModel(Base):
+    __tablename__ = "calibration_runs"
+
+    id = Column(String, primary_key=True)
+    run_id = Column(String, unique=True, nullable=False)
+    readiness = Column(String, nullable=False)
+    sample_count = Column(Integer, default=0, nullable=False)
+    valid_sample_count = Column(Integer, default=0, nullable=False)
+    metrics_summary = Column(JSON, nullable=False, default=dict)
+    recommendations = Column(JSON, nullable=False, default=list)
+    applied_count = Column(Integer, default=0, nullable=False)
+    started_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
 

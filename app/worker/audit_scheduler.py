@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.database import AsyncSessionLocal
-from app.db.models import AuditSnapshotModel, AuditTargetModel
+from app.db.models import AuditSnapshotModel, AuditTargetModel, ContentPackageModel
 from app.worker.audit_schemas import (
     AuditPolicy,
     AuditResultStatus,
@@ -18,6 +18,7 @@ from app.worker.audit_schemas import (
 )
 from app.worker.connectors import ConnectorRegistry, TargetPlatform
 from app.worker.content_package import DeliveryOutcome, DeliveryRecord
+from app.worker.outcome_collector import record_outcome_observation
 from app.worker.post_publish_audit import (
     evaluate_audit_eligibility,
     perform_audit_check,
@@ -208,6 +209,20 @@ async def cron_audit_v2_jobs(ctx=None) -> int:
                     created_at=now_naive,
                 )
                 session.add(snap_row)
+
+                # Shadow Outcome Observation Collection (non-blocking)
+                try:
+                    pkg_stmt = select(ContentPackageModel).where(ContentPackageModel.id == target_row.package_id)
+                    pkg_row = (await session.execute(pkg_stmt)).scalars().first()
+                    if pkg_row:
+                        await record_outcome_observation(
+                            session=session,
+                            snapshot=snap_row,
+                            target=target_row,
+                            package=pkg_row,
+                        )
+                except Exception as out_err:
+                    logger.error("Shadow outcome observation recording error (safe non-blocking): %s", out_err)
             else:
                 logger.info(
                     "Duplicate audit occurrence %s safely absorbed as idempotent no-op",

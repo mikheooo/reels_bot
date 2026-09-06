@@ -195,6 +195,53 @@ async def apply_migrations(engine) -> None:
             );
             """,
             "CREATE INDEX IF NOT EXISTS ix_audit_events_channel_msg ON audit_events (channel_id, message_id);",
+            """
+            CREATE TABLE IF NOT EXISTS outcome_observations (
+                id VARCHAR PRIMARY KEY,
+                outcome_id VARCHAR UNIQUE NOT NULL,
+                job_id VARCHAR NOT NULL REFERENCES jobs(id),
+                package_id VARCHAR NOT NULL REFERENCES content_packages(id),
+                publication_key VARCHAR NOT NULL,
+                target VARCHAR NOT NULL,
+                variant_type VARCHAR NOT NULL,
+                content_type VARCHAR,
+                router_primary_category VARCHAR,
+                router_risk_level VARCHAR,
+                priority_score DOUBLE PRECISION,
+                priority_band VARCHAR,
+                language_code VARCHAR,
+                published_at TIMESTAMP WITHOUT TIME ZONE,
+                audit_horizon VARCHAR NOT NULL,
+                audit_snapshot_id VARCHAR NOT NULL REFERENCES audit_snapshots(id),
+                metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+                derived_metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+                content_integrity_status VARCHAR NOT NULL,
+                data_quality_status VARCHAR NOT NULL,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_outcome_observations_pub_horizon ON outcome_observations (publication_key, audit_horizon);",
+            "CREATE INDEX IF NOT EXISTS ix_outcome_observations_job_id ON outcome_observations (job_id);",
+            "CREATE INDEX IF NOT EXISTS ix_outcome_observations_package_id ON outcome_observations (package_id);",
+            "CREATE INDEX IF NOT EXISTS ix_outcome_observations_snapshot_id ON outcome_observations (audit_snapshot_id);",
+            "CREATE INDEX IF NOT EXISTS ix_outcome_observations_target_horizon ON outcome_observations (target, audit_horizon);",
+            "CREATE INDEX IF NOT EXISTS ix_outcome_observations_data_quality ON outcome_observations (data_quality_status);",
+            """
+            CREATE TABLE IF NOT EXISTS calibration_runs (
+                id VARCHAR PRIMARY KEY,
+                run_id VARCHAR UNIQUE NOT NULL,
+                readiness VARCHAR NOT NULL,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                valid_sample_count INTEGER NOT NULL DEFAULT 0,
+                metrics_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                recommendations JSONB NOT NULL DEFAULT '[]'::jsonb,
+                applied_count INTEGER NOT NULL DEFAULT 0,
+                started_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                completed_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_calibration_runs_run_id ON calibration_runs (run_id);",
         ]
 
         for q in queries:

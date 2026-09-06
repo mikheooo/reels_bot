@@ -9,12 +9,17 @@ and controls only usefulness-oriented optional actions; it cannot relax safety
 requirements or hide the user result. Multilingual analysis has an explicit
 source-preserving contract and offline equivalence evaluation. Multiple output
 variants contract (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`)
-is deterministically rendered, validated against platform constraints, and persisted in
-the database with offline evaluation replay gating. External auto-publishing, Post-Publish
-Audit, and the content-factory design remain deferred and must not be described as
-active production capabilities.
+is deterministically rendered, validated against platform constraints, and persisted.
+Content Factory Delivery, External Platform Connectors (Level B publication boundary
+for X, Threads, YouTube Community), and Post-Publish Audit & Telemetry v2 (decaying cadence
+monitoring, observational Telegram edit telemetry, and strict occurrence idempotency) are
+verified and complete.
 
-## PRIORITY 1: Мультиязычный анализ
+Current active stage is **Priority 4: Outcome Learning Dataset & Prioritization Calibration v1**
+operating exclusively in **Observation / Shadow Calibration Mode** without automatic mutation
+of production policies or thresholds.
+
+## PRIORITY 1: Мультиязычный анализ — COMPLETE
 **Цель:** Научить пайплайн автоматически определять язык ролика и корректно работать с английским, русским, тайским, испанским, китайским, японским.
 **Включает:** Whisper (или нативный анализ Gemini), фактчекинг, QA, генерацию постов, перевод при необходимости.
 
@@ -23,17 +28,26 @@ source preservation, Russian output policy, multilingual claim/search metadata
 and offline equivalence gates implemented. Live calibration breadth and an
 optional user-selectable output language remain future scopes.
 
-## PRIORITY 2: Приоритизация новостей
+## PRIORITY 2: Приоритизация новостей — COMPLETE
 **Цель:** Не публиковать все подряд. Добавить AI-модуль оценки новости.
 **Оценивать:** важность, вирусность, новизну, вероятность набора просмотров, ценность для аудитории. Публиковать только материалы выше заданного порога.
 
-## PRIORITY 3: Несколько вариантов постов
+**Baseline 2026-09-06:** typed PriorityScore, deterministic Router-Priority bridge (router_priority_v1),
+immutable safety floor preservation, and offline evaluation suite implemented.
+
+## PRIORITY 3: Несколько вариантов постов — COMPLETE
 **Цель:** После анализа автоматически генерировать: короткий пост, подробный пост, Telegram, X, Threads, YouTube Community. AI должен выбирать лучший вариант.
 
-**Baseline 2026-09-06:** typed CanonicalContentResult, deterministic renderers for TLDR, TELEGRAM_LONG, X_POST, THREADS_POST, and YOUTUBE_COMMUNITY, declarative platform constraints (VARIANT_CONSTRAINTS), budget overflow handling without blind slicing, persistence under jobs.qa_reasons.output_variants, and offline evaluation replay suite implemented. External auto-publishing remains manual/deferred.
+**Baseline 2026-09-06:** typed CanonicalContentResult, deterministic renderers for TLDR, TELEGRAM_LONG, X_POST, THREADS_POST, and YOUTUBE_COMMUNITY, declarative platform constraints (VARIANT_CONSTRAINTS), budget overflow handling without blind slicing, persistence under jobs.qa_reasons.output_variants, and offline evaluation replay suite implemented.
 
-## PRIORITY 4: Обучение на собственной статистике
+## COMPLETED SUBSYSTEMS (PRIORITY 5 PREREQUISITES):
+- **Content Factory Delivery — COMPLETE:** ContentPackageModel, DistributionTarget, ContentDeliveryModel, PublicationIntentModel, and owner approval lifecycle.
+- **External Platform Connectors — COMPLETE:** PublicationConnector base, XConnector (OAuth 1.0a / OAuth 2.0 PKCE / API v2), ThreadsConnector (Graph API), YouTubeCommunityConnector (manual export boundary), rate limiting, retry backoff, and connector evaluation suite.
+- **Post-Publish Audit & Telemetry v2 — COMPLETE:** AuditTargetModel, AuditSnapshotModel, AuditEventModel, multi-phase decaying cadence (15m, 2h, 12h, 24h, 3d, 7d), observational edit telemetry, scheduled occurrence idempotency, and offline audit replay suite.
+
+## PRIORITY 4: Обучение на собственной статистике — ACTIVE STAGE (Shadow Calibration Mode v1)
 **Цель:** После публикации автоматически собирать: просмотры, CTR, удержание, лайки, комментарии, репосты. Использовать для улучшения выбора тем и стиля публикаций.
+**Scope v1:** Typed OutcomeObservation contracts, fixed horizons (15m, 2h, 12h, 24h, 3d, 7d), platform-specific normalization without fake zeros, data quality taxonomy, data sufficiency policies, outlier guards, shadow calibration engine, and offline replay suite without automatic production policy mutation.
 
 ## PRIORITY 5: Автоматическая публикация
 **Цель:** После подтверждения автоматически публиковать в Telegram, YouTube Shorts, Instagram, TikTok, X, Threads (Единый пайплайн).

@@ -1,0 +1,399 @@
+[
+  {
+    "scenario_id": "case_a_high_priority_strong_24h",
+    "description": "High priority post with high score generates strong 24h views and engagement",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.85,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 25000,
+      "like_count": 1200,
+      "reply_count": 150,
+      "retweet_count": 300,
+      "quote_count": 50,
+      "bookmark_count": 400
+    },
+    "normalized_metrics": {
+      "views": 25000,
+      "likes": 1200,
+      "replies": 150,
+      "reposts": 300,
+      "quotes": 50,
+      "bookmarks": 400
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_b_high_priority_weak_outcome",
+    "description": "High priority post that underperformed in views despite high model priority score",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "SOFTWARE_TOOL",
+    "router_risk": "LOW",
+    "priority_score": 0.78,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 450,
+      "like_count": 8,
+      "reply_count": 1,
+      "retweet_count": 2,
+      "quote_count": 0,
+      "bookmark_count": 3
+    },
+    "normalized_metrics": {
+      "views": 450,
+      "likes": 8,
+      "replies": 1,
+      "reposts": 2,
+      "quotes": 0,
+      "bookmarks": 3
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_c_ambiguous_strong_outcome",
+    "description": "Ambiguous priority score (0.52) that achieved high virality and engagement",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "HOW_TO",
+    "router_risk": "MEDIUM",
+    "priority_score": 0.52,
+    "priority_band": "AMBIGUOUS",
+    "raw_metrics": {
+      "impression_count": 18000,
+      "like_count": 950,
+      "reply_count": 120,
+      "retweet_count": 210,
+      "quote_count": 35,
+      "bookmark_count": 320
+    },
+    "normalized_metrics": {
+      "views": 18000,
+      "likes": 950,
+      "replies": 120,
+      "reposts": 210,
+      "quotes": 35,
+      "bookmarks": 320
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_d_low_priority_weak_outcome",
+    "description": "Low priority post that produced minimal views and near-zero engagement",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "BUSINESS_IDEA",
+    "router_risk": "HIGH",
+    "priority_score": 0.28,
+    "priority_band": "LOW",
+    "raw_metrics": {
+      "impression_count": 180,
+      "like_count": 2,
+      "reply_count": 0,
+      "retweet_count": 0,
+      "quote_count": 0,
+      "bookmark_count": 1
+    },
+    "normalized_metrics": {
+      "views": 180,
+      "likes": 2,
+      "replies": 0,
+      "reposts": 0,
+      "quotes": 0,
+      "bookmarks": 1
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_e_viral_outlier",
+    "description": "Extreme viral outlier with 500k impressions; outlier guard must prevent distortion",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.92,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 500000,
+      "like_count": 32000,
+      "reply_count": 4500,
+      "retweet_count": 8900,
+      "quote_count": 1200,
+      "bookmark_count": 7800
+    },
+    "normalized_metrics": {
+      "views": 500000,
+      "likes": 32000,
+      "replies": 4500,
+      "reposts": 8900,
+      "quotes": 1200,
+      "bookmarks": 7800
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_f_missing_views_denominator",
+    "description": "Target with likes and replies but missing impressions/views; engagement_rate must be None, NOT fake 0",
+    "target": "THREADS",
+    "variant": "THREADS_POST",
+    "horizon": "24h",
+    "router_category": "HOW_TO",
+    "router_risk": "LOW",
+    "priority_score": 0.65,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "likes": 150,
+      "replies": 25
+    },
+    "normalized_metrics": {
+      "views": null,
+      "likes": 150,
+      "replies": 25,
+      "reposts": null,
+      "quotes": null,
+      "bookmarks": null
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "PARTIAL",
+    "expected_engagement_rate_is_none": true,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_g_deleted_post",
+    "description": "External post was deleted or returned 404; must be marked CONTENT_DELETED and excluded from calibration",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "HIGH",
+    "priority_score": 0.70,
+    "priority_band": "HIGH",
+    "raw_metrics": {},
+    "normalized_metrics": {
+      "views": null,
+      "likes": null,
+      "replies": null,
+      "reposts": null,
+      "quotes": null,
+      "bookmarks": null
+    },
+    "content_integrity": "DELETED_OR_NOT_FOUND",
+    "expected_quality": "CONTENT_DELETED",
+    "expected_engagement_rate_is_none": true,
+    "expected_in_normal_calibration": false
+  },
+  {
+    "scenario_id": "case_h_modified_post",
+    "description": "External post was edited externally; must be marked CONTENT_MODIFIED and excluded from calibration",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.75,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 3000,
+      "like_count": 80
+    },
+    "normalized_metrics": {
+      "views": 3000,
+      "likes": 80,
+      "replies": null,
+      "reposts": null,
+      "quotes": null,
+      "bookmarks": null
+    },
+    "content_integrity": "MODIFIED",
+    "expected_quality": "CONTENT_MODIFIED",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": false
+  },
+  {
+    "scenario_id": "case_i_missing_optional_metric",
+    "description": "Threads post missing optional quotes and bookmarks; must be handled cleanly without crash or fake baseline",
+    "target": "THREADS",
+    "variant": "THREADS_POST",
+    "horizon": "24h",
+    "router_category": "SOFTWARE_TOOL",
+    "router_risk": "LOW",
+    "priority_score": 0.62,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "views": 4200,
+      "likes": 120,
+      "replies": 18,
+      "reposts": 14
+    },
+    "normalized_metrics": {
+      "views": 4200,
+      "likes": 120,
+      "replies": 18,
+      "reposts": 14,
+      "quotes": null,
+      "bookmarks": null
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_j_same_publication_multiple_horizons",
+    "description": "Same publication observed at 15m, 2h, and 24h; must be tracked distinctly without mixing or colliding",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "15m",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.80,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 500,
+      "like_count": 25
+    },
+    "normalized_metrics": {
+      "views": 500,
+      "likes": 25,
+      "replies": 3,
+      "reposts": 4,
+      "quotes": 1,
+      "bookmarks": 5
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_k_duplicate_audit_snapshot_retry",
+    "description": "Duplicate snapshot for same publication and horizon; second evaluation must be idempotent with 0 duplicates",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.72,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 6000,
+      "like_count": 180
+    },
+    "normalized_metrics": {
+      "views": 6000,
+      "likes": 180,
+      "replies": 22,
+      "reposts": 35,
+      "quotes": 8,
+      "bookmarks": 40
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_l_cross_platform_separation",
+    "description": "X vs Threads observations must never be averaged or directly compared across platforms",
+    "target": "THREADS",
+    "variant": "THREADS_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.80,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "views": 12000,
+      "likes": 400
+    },
+    "normalized_metrics": {
+      "views": 12000,
+      "likes": 400,
+      "replies": 50,
+      "reposts": 30,
+      "quotes": null,
+      "bookmarks": null
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_m_insufficient_dataset",
+    "description": "Small sample dataset below sufficiency policy; must evaluate to INSUFFICIENT_DATA and emit 0 recommendations",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "HOW_TO",
+    "router_risk": "LOW",
+    "priority_score": 0.60,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 1000,
+      "like_count": 30
+    },
+    "normalized_metrics": {
+      "views": 1000,
+      "likes": 30,
+      "replies": 4,
+      "reposts": 2,
+      "quotes": 0,
+      "bookmarks": 5
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  },
+  {
+    "scenario_id": "case_n_calibration_ready_dataset",
+    "description": "Sufficient dataset across cohorts meeting minimum sample size; emits shadow recommendations without auto-applying",
+    "target": "X",
+    "variant": "X_POST",
+    "horizon": "24h",
+    "router_category": "NEWS",
+    "router_risk": "LOW",
+    "priority_score": 0.88,
+    "priority_band": "HIGH",
+    "raw_metrics": {
+      "impression_count": 15000,
+      "like_count": 600
+    },
+    "normalized_metrics": {
+      "views": 15000,
+      "likes": 600,
+      "replies": 80,
+      "reposts": 120,
+      "quotes": 25,
+      "bookmarks": 190
+    },
+    "content_integrity": "MATCH",
+    "expected_quality": "VALID",
+    "expected_engagement_rate_is_none": false,
+    "expected_in_normal_calibration": true
+  }
+]

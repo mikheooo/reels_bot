@@ -606,3 +606,22 @@ def test_build_canonical_content_result_accepts_video_url():
     )
     assert canonical.video_url == url
 
+
+def test_output_variants_evaluation_replay():
+    """Verify multiple output variants contract against offline replay fixture."""
+    from pathlib import Path
+    fixture_path = Path(__file__).parent / "fixtures" / "output_variants_eval.json"
+    cases = load_variant_cases(fixture_path)
+    assert len(cases) >= 8
+    report = evaluate_variants(cases)
+    assert report.format_validity == 1.0
+    assert report.length_compliance == 1.0
+    assert report.mandatory_fact_recall == 1.0
+    assert report.forbidden_fact_rate == 0.0
+    assert report.uncertainty_preservation == 1.0
+    assert report.risk_warning_preservation == 1.0
+    assert report.language_policy_accuracy == 1.0
+    assert report.platform_limit_violations == 0
+    assert report.risk_warning_violations == 0
+
+

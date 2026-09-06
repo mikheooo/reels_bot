@@ -695,3 +695,9 @@ def test_34_distribution_replay_suite_passes():
     assert report.risk_warning_violations == 0
     assert report.idempotency_violations == 0
     assert report.passed_scenarios == 10
+
+
+# Canonical aliases for replay suites
+test_connector_evaluation_replay = test_29_connector_replay_suite_passes
+test_distribution_evaluation_replay = test_34_distribution_replay_suite_passes
+

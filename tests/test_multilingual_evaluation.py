@@ -21,3 +21,7 @@ def test_multilingual_replay_gates():
     assert report.max_score_drift <= 0.05
     assert report.risk_floor_violations == 0
     assert report.failed_cases == []
+
+
+test_multilingual_evaluation_replay = test_multilingual_replay_gates
+

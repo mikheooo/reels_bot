@@ -53,3 +53,8 @@ def test_combined_router_priority_replay_passes_policy_gates():
     assert report.policy_accuracy == 1.0
     assert report.risk_floor_violations == 0
     assert report.failed_cases == []
+
+
+test_content_router_offline_evaluation = test_offline_eval_passes_calibration_and_policy_gates
+test_router_priority_offline_evaluation = test_combined_router_priority_replay_passes_policy_gates
+
