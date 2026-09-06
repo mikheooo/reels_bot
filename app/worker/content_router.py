@@ -7,8 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.worker.factcheck import call_gemini_api
-
 ContentType = Literal[
     "SOFTWARE_TOOL",
     "AI_SKILL_PLUGIN",
@@ -37,6 +35,12 @@ AuthorIntent = Literal[
 ]
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 
+SECONDARY_LABEL_THRESHOLD = 0.45
+PRIMARY_OVERRIDE_MARGIN = 0.15
+INTENT_POLICY_THRESHOLD = 0.35
+RISK_INTENT_THRESHOLD = 0.50
+_RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
 
 class LabelScore(BaseModel):
     label: ContentType
@@ -56,11 +60,12 @@ class RouterDecision(BaseModel):
     risk_reasons: list[str] = Field(default_factory=list)
     summary: str
     router_fallback: bool = False
+    calibration_notes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def ensure_primary_label(self):
         if not any(item.label == self.primary_type for item in self.labels):
-            self.labels.insert(0, LabelScore(label=self.primary_type, confidence=1.0))
+            self.labels.insert(0, LabelScore(label=self.primary_type, confidence=0.0))
         self.labels = sorted(
             self.labels, key=lambda item: item.confidence, reverse=True
         )
@@ -150,6 +155,13 @@ ROUTER_SCHEMA = {
 }
 
 
+async def call_router_model(payload: dict) -> dict:
+    """Lazy production adapter; keeps offline calibration credential-free."""
+    from app.worker.factcheck import call_gemini_api
+
+    return await call_gemini_api(payload)
+
+
 async def route_content(
     transcript: str, visual_evidence: str | dict | None = None
 ) -> RouterDecision:
@@ -176,9 +188,104 @@ async def route_content(
             "responseSchema": ROUTER_SCHEMA,
         },
     }
-    response = await call_gemini_api(payload)
+    response = await call_router_model(payload)
     data = json.loads(response["candidates"][0]["content"]["parts"][0]["text"])
-    return RouterDecision(**data)
+    return calibrate_decision(RouterDecision(**data))
+
+
+def _max_risk(current: RiskLevel, floor: RiskLevel) -> RiskLevel:
+    return floor if _RISK_ORDER[floor] > _RISK_ORDER[current] else current
+
+
+def calibrate_decision(decision: RouterDecision) -> RouterDecision:
+    """Normalize noisy model scores and apply safety-oriented risk floors.
+
+    Calibration is deterministic and contains no content heuristics beyond the
+    model's structured labels/intents. This keeps the replay evaluator offline.
+    """
+    if decision.router_fallback:
+        return decision
+
+    notes = list(decision.calibration_notes)
+    label_max: dict[str, float] = {}
+    for item in decision.labels:
+        label_max[item.label] = max(label_max.get(item.label, 0.0), item.confidence)
+
+    declared_confidence = label_max.get(decision.primary_type, 0.0)
+    if label_max:
+        best_label, best_confidence = max(label_max.items(), key=lambda item: item[1])
+        if (
+            best_label != decision.primary_type
+            and best_confidence >= declared_confidence + PRIMARY_OVERRIDE_MARGIN
+        ):
+            notes.append(
+                f"primary:{decision.primary_type}->{best_label} "
+                f"({declared_confidence:.2f}->{best_confidence:.2f})"
+            )
+            decision.primary_type = best_label
+
+    calibrated_labels = [
+        LabelScore(label=label, confidence=confidence)
+        for label, confidence in label_max.items()
+        if label == decision.primary_type or confidence >= SECONDARY_LABEL_THRESHOLD
+    ]
+    if len(calibrated_labels) < len(label_max):
+        notes.append(f"labels_pruned_below:{SECONDARY_LABEL_THRESHOLD:.2f}")
+    if not any(item.label == decision.primary_type for item in calibrated_labels):
+        calibrated_labels.append(
+            LabelScore(label=decision.primary_type, confidence=declared_confidence)
+        )
+
+    intent_max: dict[str, float] = {}
+    for item in decision.intents:
+        intent_max[item.intent] = max(intent_max.get(item.intent, 0.0), item.confidence)
+    calibrated_intents = [
+        IntentScore(intent=intent, confidence=confidence)
+        for intent, confidence in intent_max.items()
+        if confidence >= INTENT_POLICY_THRESHOLD
+    ]
+    if not calibrated_intents and intent_max:
+        intent, confidence = max(intent_max.items(), key=lambda item: item[1])
+        calibrated_intents = [IntentScore(intent=intent, confidence=confidence)]
+    if len(calibrated_intents) < len(intent_max):
+        notes.append(f"intents_pruned_below:{INTENT_POLICY_THRESHOLD:.2f}")
+
+    active_intents = {
+        item.intent
+        for item in calibrated_intents
+        if item.confidence >= RISK_INTENT_THRESHOLD
+    }
+    risk_floor: RiskLevel = "LOW"
+    if decision.primary_type in {"NEWS_CLAIM", "JOB_OPPORTUNITY"}:
+        risk_floor = "MEDIUM"
+    if decision.primary_type in {"HEALTH_MEDICAL", "FINANCE_INVESTMENT"}:
+        risk_floor = "MEDIUM"
+        if active_intents & {"PROMISE_RESULT", "SELL", "PERSUADE"}:
+            risk_floor = "HIGH"
+    if decision.primary_type == "FITNESS":
+        if "PROMISE_RESULT" in active_intents:
+            risk_floor = "HIGH"
+        elif active_intents & {"RECOMMEND", "WARN"}:
+            risk_floor = "MEDIUM"
+    if decision.primary_type in {"PRODUCT", "BUSINESS_IDEA"} and active_intents & {
+        "SELL",
+        "PROMISE_RESULT",
+    }:
+        risk_floor = "MEDIUM"
+
+    calibrated_risk = _max_risk(decision.risk, risk_floor)
+    if calibrated_risk != decision.risk:
+        notes.append(f"risk_floor:{decision.risk}->{calibrated_risk}")
+
+    decision.labels = sorted(
+        calibrated_labels, key=lambda item: item.confidence, reverse=True
+    )
+    decision.intents = sorted(
+        calibrated_intents, key=lambda item: item.confidence, reverse=True
+    )
+    decision.risk = calibrated_risk
+    decision.calibration_notes = notes
+    return decision
 
 
 def fallback_route(reason: str) -> RouterDecision:
@@ -196,7 +303,11 @@ def fallback_route(reason: str) -> RouterDecision:
 
 def policy_for(decision: RouterDecision) -> AnalysisPolicy:
     primary = decision.primary_type
-    intents = {item.intent for item in decision.intents if item.confidence >= 0.35}
+    intents = {
+        item.intent
+        for item in decision.intents
+        if item.confidence >= INTENT_POLICY_THRESHOLD
+    }
 
     if decision.router_fallback:
         return AnalysisPolicy(

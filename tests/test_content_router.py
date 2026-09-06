@@ -4,6 +4,7 @@ import pytest
 
 from app.worker.content_router import (
     RouterDecision,
+    calibrate_decision,
     fallback_route,
     policy_for,
     route_content,
@@ -108,6 +109,75 @@ def test_router_failure_preserves_legacy_downstream_capabilities():
     assert policy.include_technical_details is True
 
 
+def test_calibration_prunes_weak_scores_and_deduplicates():
+    calibrated = calibrate_decision(
+        RouterDecision(
+            primary_type="PRODUCT",
+            labels=[
+                {"label": "PRODUCT", "confidence": 0.91},
+                {"label": "PRODUCT", "confidence": 0.72},
+                {"label": "SOFTWARE_TOOL", "confidence": 0.44},
+            ],
+            intents=[
+                {"intent": "INFORM", "confidence": 0.82},
+                {"intent": "SELL", "confidence": 0.21},
+            ],
+            risk="LOW",
+            summary="fixture",
+        )
+    )
+    assert [(item.label, item.confidence) for item in calibrated.labels] == [
+        ("PRODUCT", 0.91)
+    ]
+    assert [item.intent for item in calibrated.intents] == ["INFORM"]
+
+
+def test_calibration_overrides_conflicting_primary_by_margin():
+    calibrated = calibrate_decision(
+        RouterDecision(
+            primary_type="SOFTWARE_TOOL",
+            labels=[
+                {"label": "SOFTWARE_TOOL", "confidence": 0.54},
+                {"label": "AI_SKILL_PLUGIN", "confidence": 0.75},
+            ],
+            intents=[{"intent": "INFORM", "confidence": 0.8}],
+            risk="LOW",
+            summary="fixture",
+        )
+    )
+    assert calibrated.primary_type == "AI_SKILL_PLUGIN"
+    assert any(note.startswith("primary:") for note in calibrated.calibration_notes)
+
+
+def test_calibration_can_correct_primary_missing_from_model_labels():
+    calibrated = calibrate_decision(
+        RouterDecision(
+            primary_type="SOFTWARE_TOOL",
+            labels=[{"label": "AI_SKILL_PLUGIN", "confidence": 0.81}],
+            intents=[{"intent": "INFORM", "confidence": 0.8}],
+            risk="LOW",
+            summary="fixture",
+        )
+    )
+    assert calibrated.primary_type == "AI_SKILL_PLUGIN"
+
+
+@pytest.mark.parametrize(
+    ("primary", "intent", "expected"),
+    [
+        ("HEALTH_MEDICAL", "PROMISE_RESULT", "HIGH"),
+        ("FINANCE_INVESTMENT", "SELL", "HIGH"),
+        ("FITNESS", "PROMISE_RESULT", "HIGH"),
+        ("NEWS_CLAIM", "INFORM", "MEDIUM"),
+        ("JOB_OPPORTUNITY", "INFORM", "MEDIUM"),
+        ("PRODUCT", "SELL", "MEDIUM"),
+    ],
+)
+def test_calibration_applies_risk_floors(primary, intent, expected):
+    calibrated = calibrate_decision(decision(primary, risk="LOW", intents=[intent]))
+    assert calibrated.risk == expected
+
+
 @pytest.mark.asyncio
 async def test_route_content_parses_multilabel_json(monkeypatch):
     response = {
@@ -130,7 +200,7 @@ async def test_route_content_parses_multilabel_json(monkeypatch):
             "candidates": [{"content": {"parts": [{"text": json.dumps(response)}]}}]
         }
 
-    monkeypatch.setattr("app.worker.content_router.call_gemini_api", fake_call)
+    monkeypatch.setattr("app.worker.content_router.call_router_model", fake_call)
     routed = await route_content("Superpowers provides skills for coding agents")
     assert routed.primary_type == "AI_SKILL_PLUGIN"
     assert len(routed.labels) == 2
