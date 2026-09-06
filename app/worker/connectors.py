@@ -60,8 +60,17 @@ class ConnectorCapabilities(BaseModel):
     status: CapabilityStatus
     publication_mode: PublicationMode
     max_chars: int
-    supports_lookup: bool = False
+    supports_text: bool = True
+    supports_image: bool = False
+    supports_video: bool = False
+    supports_edit: bool = False
     supports_delete: bool = False
+    supports_lookup: bool = False
+    supports_timeline_reconciliation: bool = False
+    supports_native_idempotency: bool = False
+    max_media_count: int = 0
+    supported_mime_types: list[str] = Field(default_factory=lambda: ["text/plain"])
+    rate_limit_model: str = ""
     auth_model: str
     official_endpoint: str
     known_restrictions: list[str] = Field(default_factory=list)
@@ -262,8 +271,17 @@ class XConnector(PublicationConnector):
             status=status,
             publication_mode=PublicationMode.MANUAL_APPROVAL,
             max_chars=280,
-            supports_lookup=True,
+            supports_text=True,
+            supports_image=False,
+            supports_video=False,
+            supports_edit=False,
             supports_delete=True,
+            supports_lookup=True,
+            supports_timeline_reconciliation=True,
+            supports_native_idempotency=True,
+            max_media_count=0,
+            supported_mime_types=["text/plain"],
+            rate_limit_model="header_driven_x_rate_limit_or_tier_fallback",
             auth_model="OAuth 2.0 User Context / OAuth 1.0a",
             official_endpoint="POST https://api.x.com/2/tweets",
             known_restrictions=[
@@ -580,8 +598,17 @@ class ThreadsConnector(PublicationConnector):
             status=status,
             publication_mode=PublicationMode.MANUAL_APPROVAL,
             max_chars=500,
-            supports_lookup=True,
+            supports_text=True,
+            supports_image=False,
+            supports_video=False,
+            supports_edit=False,
             supports_delete=False,
+            supports_lookup=True,
+            supports_timeline_reconciliation=True,
+            supports_native_idempotency=False,
+            max_media_count=0,
+            supported_mime_types=["text/plain"],
+            rate_limit_model="header_driven_threads_250_rolling_24h",
             auth_model="OAuth 2.0 Bearer Token (Meta Graph API)",
             official_endpoint="POST https://graph.threads.net/v1.0/{user-id}/threads",
             known_restrictions=[
@@ -861,10 +888,55 @@ class ThreadsConnector(PublicationConnector):
                     reason="Verified existing Threads post by ID",
                 )
 
+        if not self._has_credentials():
+            return AmbiguousReconciliationResult(
+                resolved=False,
+                published=False,
+                reason="Threads credentials not configured; manual reconciliation required",
+            )
+
+        # Without provider post ID, query recent user threads to verify if post was created
+        client = self._get_client()
+        url = (
+            f"https://graph.threads.net/v1.0/{self.user_id}/threads"
+            f"?limit=5&fields=id,text,permalink&access_token={self.access_token}"
+        )
+        try:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                threads = resp.json().get("data", [])
+                target_snippet = text.strip()[:100]
+                for th in threads:
+                    th_text = th.get("text", "").strip()
+                    if target_snippet and target_snippet in th_text:
+                        th_id = str(th.get("id"))
+                        permalink = th.get("permalink") or f"https://www.threads.net/t/{th_id}"
+                        return AmbiguousReconciliationResult(
+                            resolved=True,
+                            published=True,
+                            provider_post_id=th_id,
+                            provider_url=permalink,
+                            reason="Matched recent Threads post text",
+                        )
+                # Confirmed not found in recent user threads -> safe to retry
+                return AmbiguousReconciliationResult(
+                    resolved=True,
+                    published=False,
+                    reason="Post not found in recent user threads; retry permitted",
+                )
+            else:
+                logger.error(
+                    "Threads reconciliation query failed: status %s %s",
+                    resp.status_code,
+                    sanitize_sensitive_text(resp.text),
+                )
+        except Exception as e:
+            logger.error("Threads reconciliation error: %s", sanitize_sensitive_text(str(e)))
+
         return AmbiguousReconciliationResult(
             resolved=False,
             published=False,
-            reason="Threads does not support text search; manual reconciliation required",
+            reason="Could not definitively prove or disprove Threads post creation; manual reconciliation required",
         )
 
 
@@ -883,8 +955,17 @@ class YouTubeCommunityConnector(PublicationConnector):
             status=CapabilityStatus.UNSUPPORTED_OFFICIAL_API,
             publication_mode=PublicationMode.MANUAL_EXPORT,
             max_chars=2000,
-            supports_lookup=False,
+            supports_text=False,
+            supports_image=False,
+            supports_video=False,
+            supports_edit=False,
             supports_delete=False,
+            supports_lookup=False,
+            supports_timeline_reconciliation=False,
+            supports_native_idempotency=False,
+            max_media_count=0,
+            supported_mime_types=["text/plain"],
+            rate_limit_model="none_manual_export",
             auth_model="NONE (Official API does not support Community Post publishing)",
             official_endpoint="UNSUPPORTED_OFFICIAL_API",
             known_restrictions=[

@@ -99,13 +99,26 @@ def compute_package_content_hash(package: ContentPackage) -> str:
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
 
+class PublicationPlanStatus(str, Enum):
+    """Deterministic aggregate states for a multi-platform PublicationPlan."""
+
+    ALL_PENDING = "ALL_PENDING"
+    ATTEMPTING = "ATTEMPTING"
+    ALL_SUCCEEDED = "ALL_SUCCEEDED"
+    PARTIAL_SUCCESS = "PARTIAL_SUCCESS"
+    RETRY_PENDING = "RETRY_PENDING"
+    MANUAL_RECONCILIATION_REQUIRED = "MANUAL_RECONCILIATION_REQUIRED"
+    TERMINAL_FAILURE = "TERMINAL_FAILURE"
+    CANCELLED = "CANCELLED"
+
+
 class OwnerApproval(BaseModel):
-    """Immutable owner approval record cryptographically binding content, platforms, and owner identity."""
+    """Immutable owner approval record bound via SHA-256 cryptographic integrity hash to exact rendered content."""
 
     approval_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     package_id: str
     owner_id: int
-    content_hash: str
+    content_hash: str  # Cryptographic integrity hash used to bind owner approval to exact rendered content
     target_platforms: list[TargetPlatform]
     approved_at: datetime.datetime = Field(default_factory=_utc_now)
 
@@ -135,14 +148,90 @@ class PublicationPlan(BaseModel):
     approval: OwnerApproval
     scheduled_for: datetime.datetime | None = None
     intents: list[PublicationIntent] = Field(default_factory=list)
-    status: PublicationState = PublicationState.APPROVED
+    status: PublicationPlanStatus | PublicationState = PublicationPlanStatus.ALL_PENDING
     created_at: datetime.datetime = Field(default_factory=_utc_now)
+
+
+def calculate_aggregate_plan_status(plan: PublicationPlan) -> PublicationPlanStatus:
+    """Deterministically calculate aggregate PublicationPlan status from individual intent states.
+
+    Semantics:
+    1. CANCELLED: plan or package was explicitly cancelled.
+    2. ATTEMPTING: one or more active targets currently in flight.
+    3. MANUAL_RECONCILIATION_REQUIRED: one or more targets in ambiguous DELIVERY_UNKNOWN state.
+    4. RETRY_PENDING: one or more targets waiting for scheduled retry backoff.
+    5. ALL_SUCCEEDED: all active targets succeeded (or only manual export targets exist).
+    6. TERMINAL_FAILURE: all active targets failed permanently (or staled) with no success.
+    7. ALL_PENDING: all active targets are awaiting initial dispatch.
+    8. PARTIAL_SUCCESS: at least one succeeded and at least one permanently failed (with no retries remaining).
+    """
+    status_val = getattr(plan.status, "value", plan.status)
+    if status_val in (PublicationPlanStatus.CANCELLED.value, PublicationState.CANCELLED.value, "CANCELLED"):
+        return PublicationPlanStatus.CANCELLED
+
+    if not plan.intents:
+        return PublicationPlanStatus.ALL_PENDING
+
+    active_intents = [
+        i for i in plan.intents if i.status != PublicationIntentStatus.MANUAL_EXPORT_READY
+    ]
+    if not active_intents:
+        return PublicationPlanStatus.ALL_SUCCEEDED
+
+    if any(i.status == PublicationIntentStatus.IN_FLIGHT for i in active_intents):
+        return PublicationPlanStatus.ATTEMPTING
+
+    if any(i.status == PublicationIntentStatus.DELIVERY_UNKNOWN for i in active_intents):
+        return PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+    has_retry_pending = any(
+        i.status == PublicationIntentStatus.PENDING and (i.attempt_count > 0 or i.next_retry_at is not None)
+        for i in active_intents
+    )
+
+    succeeded = [i for i in active_intents if i.status == PublicationIntentStatus.SUCCEEDED]
+    failed = [
+        i
+        for i in active_intents
+        if i.status in (PublicationIntentStatus.FAILED, PublicationIntentStatus.APPROVAL_STALE)
+    ]
+    initial_pending = [
+        i
+        for i in active_intents
+        if i.status == PublicationIntentStatus.PENDING
+        and i.attempt_count == 0
+        and i.next_retry_at is None
+    ]
+
+    if has_retry_pending:
+        return PublicationPlanStatus.RETRY_PENDING
+
+    if not succeeded and not failed:
+        return PublicationPlanStatus.ALL_PENDING
+
+    if len(succeeded) == len(active_intents):
+        return PublicationPlanStatus.ALL_SUCCEEDED
+
+    if len(failed) == len(active_intents):
+        return PublicationPlanStatus.TERMINAL_FAILURE
+
+    if succeeded and failed:
+        return PublicationPlanStatus.PARTIAL_SUCCESS
+
+    if succeeded and initial_pending:
+        return PublicationPlanStatus.PARTIAL_SUCCESS
+
+    if initial_pending and failed:
+        return PublicationPlanStatus.PARTIAL_SUCCESS
+
+    return PublicationPlanStatus.PARTIAL_SUCCESS
 
 
 def verify_approval(
     package: ContentPackage,
     approval: OwnerApproval,
     expected_owner_id: int | None = None,
+    target_platform: TargetPlatform | None = None,
 ) -> tuple[bool, str]:
     """Verify validity of OwnerApproval against the ContentPackage.
 
@@ -150,7 +239,8 @@ def verify_approval(
     1. Package ID must match.
     2. Owner ID must match expected authorized owner.
     3. Package must not be in REJECTED or FAILED terminal states.
-    4. Content hash must match current rendered content (staleness check).
+    4. Content hash (cryptographic integrity hash) must match current rendered content (staleness check).
+    5. Target platform set cannot be empty; if target_platform is passed, it must be in approved targets.
     """
     if approval.package_id != package.package_id:
         return False, f"Approval package_id {approval.package_id} != package {package.package_id}"
@@ -160,6 +250,12 @@ def verify_approval(
 
     if package.approval_state in (PackageStatus.REJECTED, PackageStatus.FAILED):
         return False, f"Cannot execute publication for package in terminal state {package.approval_state.value}"
+
+    if not approval.target_platforms:
+        return False, "TARGET_SET_EMPTY: OwnerApproval has no target platforms specified"
+
+    if target_platform is not None and target_platform not in approval.target_platforms:
+        return False, f"TARGET_NOT_APPROVED: Platform {target_platform.value} was not authorized in owner approval target set"
 
     current_hash = compute_package_content_hash(package)
     if approval.content_hash != current_hash:
@@ -196,7 +292,7 @@ class PublicationOrchestrator:
         """
         is_valid, reason = verify_approval(package, approval, expected_owner_id)
         if not is_valid:
-            if "owner_id" in reason:
+            if "owner_id" in reason or "TARGET_NOT_APPROVED" in reason or "TARGET_SET_EMPTY" in reason:
                 raise UnauthorizedApprovalError(reason)
             elif "terminal state" in reason:
                 raise InvalidLifecycleTransitionError(reason)
@@ -278,7 +374,7 @@ class PublicationOrchestrator:
             approval=approval,
             scheduled_for=scheduled_for,
             intents=intents,
-            status=PublicationState.APPROVED,
+            status=PublicationPlanStatus.ALL_PENDING,
             created_at=now,
         )
         return plan
@@ -292,6 +388,7 @@ class PublicationOrchestrator:
         session: Any | None = None,
         simulate_crash_after_publish: bool = False,
         now: datetime.datetime | None = None,
+        approval: OwnerApproval | None = None,
     ) -> PublicationResult:
         """Execute a single PublicationIntent with strict crash consistency and idempotency.
 
@@ -310,6 +407,24 @@ class PublicationOrchestrator:
                 error_code="TARGET_NOT_FOUND",
                 error_message=f"Distribution target {intent.target.value} not found in package",
             )
+
+        # Target set authorization guard
+        if approval is not None:
+            is_valid, reason = verify_approval(package, approval, target_platform=intent.target)
+            if not is_valid:
+                target_obj.status = TargetDeliveryStatus.FAILED
+                err_code = "TARGET_NOT_APPROVED" if "TARGET_NOT_APPROVED" in reason else "UNAUTHORIZED_APPROVAL"
+                target_obj.error_code = err_code
+                target_obj.error_message = reason
+                intent.status = PublicationIntentStatus.FAILED
+                intent.last_error_code = err_code
+                intent.last_error_message = reason
+                return PublicationResult(
+                    success=False,
+                    error_code=err_code,
+                    error_message=reason,
+                    is_retryable=False,
+                )
 
         # Crash Boundary D: Already published -> idempotent no-op
         if intent.status == PublicationIntentStatus.SUCCEEDED:
@@ -372,6 +487,33 @@ class PublicationOrchestrator:
                     error_code="SUPPORTED_NOT_CONFIGURED",
                     error_message=f"{intent.target.value} credentials not configured.",
                 )
+
+        # Preflight payload validation against declared connector capabilities
+        if not caps.supports_text:
+            intent.status = PublicationIntentStatus.FAILED
+            target_obj.status = TargetDeliveryStatus.FAILED
+            err = f"Connector {intent.target.value} does not support text publishing"
+            intent.last_error_code = "CAPABILITY_UNSUPPORTED"
+            intent.last_error_message = err
+            return PublicationResult(
+                success=False,
+                error_code="CAPABILITY_UNSUPPORTED",
+                error_message=err,
+                is_retryable=False,
+            )
+
+        if len(current_text) > caps.max_chars:
+            intent.status = PublicationIntentStatus.FAILED
+            target_obj.status = TargetDeliveryStatus.FAILED
+            err = f"{intent.target.value} payload length {len(current_text)} exceeds maximum limit of {caps.max_chars} characters"
+            intent.last_error_code = "BUDGET_EXCEEDED"
+            intent.last_error_message = err
+            return PublicationResult(
+                success=False,
+                error_code="BUDGET_EXCEEDED",
+                error_message=err,
+                is_retryable=False,
+            )
 
         attempt_id = (
             sum(1 for r in package.delivery_records if r.target == intent.target) + 1
@@ -527,6 +669,13 @@ class PublicationOrchestrator:
                 target_obj.external_id = recon.provider_post_id
                 target_obj.delivered_at = now_naive
 
+                pub_result = PublicationResult(
+                    success=True,
+                    provider_post_id=recon.provider_post_id,
+                    provider_url=recon.provider_url,
+                    http_status=200,
+                )
+
                 rec = DeliveryRecord.create(
                     package_id=package.package_id,
                     target=intent.target,
@@ -635,6 +784,11 @@ class PublicationOrchestrator:
 
         Failure on Platform A does not invalidate or re-attempt Platform B.
         """
+        if target_filter and target_filter not in plan.approval.target_platforms:
+            raise UnauthorizedApprovalError(
+                f"Target platform {target_filter.value} was not authorized in owner approval target set {plan.approval.target_platforms}"
+            )
+
         reg = connector_registry or ConnectorRegistry
         results: dict[str, Any] = {}
 
@@ -668,6 +822,7 @@ class PublicationOrchestrator:
                     connector=connector,
                     session=session,
                     now=now,
+                    approval=plan.approval,
                 )
                 results[intent.target.value] = {
                     "status": intent.status.value,
@@ -682,16 +837,7 @@ class PublicationOrchestrator:
                     "error": sanitize_sensitive_text(str(e)),
                 }
 
-        # Update plan status
-        if any(i.status == PublicationIntentStatus.IN_FLIGHT for i in plan.intents):
-            plan.status = PublicationState.ATTEMPTING
-        elif any(i.status == PublicationIntentStatus.SUCCEEDED for i in plan.intents):
-            plan.status = PublicationState.PUBLISHED
-        elif any(i.status == PublicationIntentStatus.PENDING for i in plan.intents):
-            plan.status = PublicationState.RETRYABLE_FAILURE
-        elif any(i.status == PublicationIntentStatus.DELIVERY_UNKNOWN for i in plan.intents):
-            plan.status = PublicationState.AMBIGUOUS
-        else:
-            plan.status = PublicationState.PERMANENT_FAILURE
+        # Update plan status deterministically using aggregate semantics
+        plan.status = calculate_aggregate_plan_status(plan)
 
         return results

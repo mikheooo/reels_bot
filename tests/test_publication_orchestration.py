@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.worker.connectors import (
     PublicationConnector,
     PublicationResult,
     RateLimitInfo,
+    ThreadsConnector,
 )
 from app.worker.content_package import (
     CanonicalContentResult,
@@ -45,7 +47,9 @@ from app.worker.publication_orchestrator import (
     OwnerApproval,
     PublicationOrchestrator,
     PublicationPlan,
+    PublicationPlanStatus,
     PublicationState,
+    calculate_aggregate_plan_status,
     compute_package_content_hash,
     verify_approval,
 )
@@ -169,6 +173,9 @@ class MockTestConnector(PublicationConnector):
         error_code: str | None = None,
         error_message: str | None = None,
         reconcile_finds_post: bool = False,
+        max_chars: int | None = None,
+        supports_text: bool = True,
+        retry_after_seconds: int | None = None,
     ) -> None:
         self.target = target
         self._status = status
@@ -180,6 +187,9 @@ class MockTestConnector(PublicationConnector):
         self.error_code = error_code
         self.error_message = error_message
         self.reconcile_finds_post = reconcile_finds_post
+        self.max_chars = max_chars or (500 if target == TargetPlatform.THREADS else 280)
+        self.supports_text = supports_text
+        self.retry_after_seconds = retry_after_seconds
         self.publish_calls: list[dict[str, Any]] = []
         self.reconcile_calls: list[dict[str, Any]] = []
 
@@ -188,9 +198,11 @@ class MockTestConnector(PublicationConnector):
             target=self.target,
             status=self._status,
             publication_mode=PublicationMode.MANUAL_APPROVAL,
-            max_chars=280,
+            max_chars=self.max_chars,
+            supports_text=self.supports_text,
             supports_lookup=True,
             supports_delete=True,
+            supports_timeline_reconciliation=True,
             auth_model="Mock Auth",
             official_endpoint="https://mock.api",
         )
@@ -209,6 +221,7 @@ class MockTestConnector(PublicationConnector):
                 provider_post_id=self.post_id,
                 provider_url=f"https://platform.com/post/{self.post_id}",
                 http_status=self.http_status,
+                retry_after_seconds=self.retry_after_seconds,
             )
         return PublicationResult(
             success=False,
@@ -217,6 +230,7 @@ class MockTestConnector(PublicationConnector):
             is_retryable=self.is_retryable,
             error_code=self.error_code,
             error_message=self.error_message,
+            retry_after_seconds=self.retry_after_seconds,
         )
 
     async def lookup(self, provider_post_id: str) -> LookupResult:
@@ -685,6 +699,527 @@ async def test_15_telemetry_audit_correctness():
 
 
 # =========================================================================
+# Multi-Platform Publication Expansion Tests (Priority 5 Slice 2)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_mp_01_approval_x_only_cannot_publish_b():
+    """Approval granted for X only cannot publish Meta Threads."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X],
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    assert len(plan.intents) == 1
+    assert plan.intents[0].target == TargetPlatform.X
+
+    # Attempting to filter or execute THREADS with this plan raises UnauthorizedApprovalError
+    with pytest.raises(UnauthorizedApprovalError):
+        await PublicationOrchestrator.execute_plan(plan, pkg, target_filter=TargetPlatform.THREADS)
+
+    # Directly attempting to execute an intent for THREADS with this approval is rejected
+    threads_intent = PublicationIntent(
+        package_id=pkg.package_id,
+        job_id=pkg.job_id,
+        target=TargetPlatform.THREADS,
+        variant=OutputVariantType.THREADS_POST,
+        approved_by=1001,
+        approved_at=_utc_now(),
+        payload_hash="somehash",
+        publication_key=f"{pkg.package_id}:THREADS:THREADS_POST:somehash",
+        status=PublicationIntentStatus.PENDING,
+    )
+    conn = MockTestConnector(target=TargetPlatform.THREADS)
+    res = await PublicationOrchestrator.execute_intent(threads_intent, pkg, conn, approval=approval)
+    assert res.success is False
+    assert res.error_code == "TARGET_NOT_APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_mp_02_approval_two_targets_creates_two_identities():
+    """Approval for X + Threads creates exactly two distinct publication identities."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    assert len(plan.intents) == 2
+    targets = {i.target for i in plan.intents}
+    assert targets == {TargetPlatform.X, TargetPlatform.THREADS}
+    assert plan.intents[0].publication_key != plan.intents[1].publication_key
+    assert "X" in plan.intents[0].publication_key or "THREADS" in plan.intents[0].publication_key
+    assert "X" in plan.intents[1].publication_key or "THREADS" in plan.intents[1].publication_key
+
+
+@pytest.mark.asyncio
+async def test_mp_03_both_targets_succeed_independently():
+    """Both X and Threads succeed independently, resulting in ALL_SUCCEEDED plan."""
+    pkg = _make_test_package()
+    pkg.distribution_targets[TargetPlatform.YOUTUBE_COMMUNITY.value].status = TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-post-101")
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS, publish_success=True, post_id="thr-post-202")
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    results = await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert results[TargetPlatform.X.value]["success"] is True
+    assert results[TargetPlatform.THREADS.value]["success"] is True
+    assert pkg.distribution_targets[TargetPlatform.X.value].status == TargetDeliveryStatus.DELIVERED
+    assert pkg.distribution_targets[TargetPlatform.THREADS.value].status == TargetDeliveryStatus.DELIVERED
+    assert plan.status == PublicationPlanStatus.ALL_SUCCEEDED
+    assert pkg.approval_state == PackageStatus.DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_mp_04_x_succeeds_b_transiently_fails():
+    """X succeeds and Threads transiently fails with 503; plan is RETRY_PENDING."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-101")
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_retryable=True,
+        http_status=503,
+        error_code="SERVER_ERROR_503",
+    )
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert pkg.distribution_targets[TargetPlatform.X.value].status == TargetDeliveryStatus.DELIVERED
+    thr_intent = next(i for i in plan.intents if i.target == TargetPlatform.THREADS)
+    assert thr_intent.status == PublicationIntentStatus.PENDING
+    assert thr_intent.next_retry_at is not None
+    assert plan.status == PublicationPlanStatus.RETRY_PENDING
+
+
+@pytest.mark.asyncio
+async def test_mp_05_x_succeeds_b_permanently_fails():
+    """X succeeds and Threads permanently fails; plan is PARTIAL_SUCCESS."""
+    pkg = _make_test_package()
+    pkg.distribution_targets[TargetPlatform.YOUTUBE_COMMUNITY.value].status = TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-101")
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_retryable=False,
+        http_status=400,
+        error_code="INVALID_PAYLOAD",
+    )
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert pkg.distribution_targets[TargetPlatform.X.value].status == TargetDeliveryStatus.DELIVERED
+    assert pkg.distribution_targets[TargetPlatform.THREADS.value].status == TargetDeliveryStatus.FAILED
+    assert plan.status == PublicationPlanStatus.PARTIAL_SUCCESS
+    assert pkg.approval_state == PackageStatus.PARTIALLY_DELIVERED
+
+
+@pytest.mark.asyncio
+async def test_mp_06_b_succeeds_x_ambiguous():
+    """Threads succeeds and X encounters ambiguous timeout; plan is MANUAL_RECONCILIATION_REQUIRED."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(
+        target=TargetPlatform.X,
+        publish_success=False,
+        is_ambiguous=True,
+        reconcile_finds_post=False,
+        error_code="TIMEOUT",
+    )
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS, publish_success=True, post_id="thr-202")
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert pkg.distribution_targets[TargetPlatform.THREADS.value].status == TargetDeliveryStatus.DELIVERED
+    x_intent = next(i for i in plan.intents if i.target == TargetPlatform.X)
+    assert x_intent.status == PublicationIntentStatus.DELIVERY_UNKNOWN
+    assert plan.status == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_mp_07_retry_b_does_not_redispatch_x():
+    """Retrying failed Threads target does NOT re-dispatch already succeeded X."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-101")
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_retryable=True,
+        http_status=503,
+    )
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert len(x_conn.publish_calls) == 1
+    assert len(thr_conn.publish_calls) == 1
+
+    # Now make Threads succeed on retry
+    thr_conn.publish_success = True
+    thr_conn.post_id = "thr-retry-success"
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    # X must NEVER have been called again
+    assert len(x_conn.publish_calls) == 1
+    assert len(thr_conn.publish_calls) == 2
+    assert plan.status == PublicationPlanStatus.ALL_SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_mp_08_concurrent_execution_cannot_duplicate_either():
+    """Concurrent workers executing the same plan do not duplicate calls."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-101")
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS, publish_success=True, post_id="thr-202")
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+
+    # Run two executions sequentially / concurrently
+    await asyncio.gather(
+        PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg),
+        PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg),
+    )
+
+    # Combined calls must not create duplicates
+    assert len(x_conn.publish_calls) == 1
+    assert len(thr_conn.publish_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_mp_09_modification_after_approval_blocks_both():
+    """Modifying content after approval invalidates both X and Threads targets."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X)
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS)
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+
+    # Modify package content
+    pkg.output_variants.variants[OutputVariantType.X_POST.value].text = "Tampered X content"
+    pkg.output_variants.variants[OutputVariantType.THREADS_POST.value].text = "Tampered Threads content"
+
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert len(x_conn.publish_calls) == 0
+    assert len(thr_conn.publish_calls) == 0
+    assert plan.status == PublicationPlanStatus.TERMINAL_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_mp_10_unsupported_b_payload_rejected_preflight():
+    """Threads payload exceeding 500 characters is rejected BEFORE network dispatch."""
+    long_threads_text = "A" * 501
+    pkg = _make_test_package(threads_text=long_threads_text)
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS, max_chars=500)
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+
+    res = await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn)
+    assert res.success is False
+    assert res.error_code == "BUDGET_EXCEEDED"
+    assert len(thr_conn.publish_calls) == 0  # Zero network calls
+
+
+@pytest.mark.asyncio
+async def test_mp_11_b_auth_scopes_failure_classification():
+    """Threads 401/403 auth failure is classified as non-retryable terminal failure."""
+    connector = ThreadsConnector(access_token="invalid_token", user_id="12345")
+    is_retryable, err_code = connector.classify_error(401, "Invalid OAuth access token")
+    assert is_retryable is False
+    assert "AUTH_ERROR" in err_code
+
+    is_retryable, err_code = connector.classify_error(403, "Insufficient scopes")
+    assert is_retryable is False
+    assert "AUTH_ERROR" in err_code
+
+
+@pytest.mark.asyncio
+async def test_mp_12_b_rate_limit_handling():
+    """Threads 429 rate limit triggers retry with delay."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_retryable=True,
+        http_status=429,
+        error_code="RATE_LIMITED",
+        retry_after_seconds=120,
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    now = _utc_now()
+    res = await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn, now=now)
+
+    assert res.success is False
+    assert plan.intents[0].status == PublicationIntentStatus.PENDING
+    assert plan.intents[0].next_retry_at is not None
+    assert (plan.intents[0].next_retry_at - now).total_seconds() == 120
+
+
+@pytest.mark.asyncio
+async def test_mp_13_b_external_success_local_crash():
+    """Crash consistency Boundary C for Threads: post succeeded externally, recovery avoids duplicate."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=True,
+        post_id="thr-boundary-c-123",
+        reconcile_finds_post=True,
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+
+    # First attempt: simulate crash after publish
+    with pytest.raises(RuntimeError, match="SIMULATED_LOCAL_CRASH"):
+        await PublicationOrchestrator.execute_intent(
+            plan.intents[0], pkg, thr_conn, simulate_crash_after_publish=True
+        )
+
+    assert len(thr_conn.publish_calls) == 1
+    assert plan.intents[0].status == PublicationIntentStatus.IN_FLIGHT
+
+    # Recovery: replay without crash
+    res = await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn)
+    assert res.success is True
+    assert res.provider_post_id == "thr-boundary-c-123"
+    assert len(thr_conn.publish_calls) == 1  # No duplicate post
+    assert plan.intents[0].status == PublicationIntentStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_mp_14_b_ambiguous_result_without_blind_repost():
+    """Threads ambiguous timeout without reconciliation confirmation avoids blind repost."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_ambiguous=True,
+        reconcile_finds_post=False,
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn)
+
+    assert plan.intents[0].status == PublicationIntentStatus.DELIVERY_UNKNOWN
+    assert len(thr_conn.publish_calls) == 1  # 0 blind reposts
+
+
+@pytest.mark.asyncio
+async def test_mp_15_target_specific_cancellation():
+    """Cancelling target X does not cancel or corrupt target Threads."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X)
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS, publish_success=True, post_id="thr-ok")
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+
+    # Cancel target X
+    x_intent = next(i for i in plan.intents if i.target == TargetPlatform.X)
+    x_intent.status = PublicationIntentStatus.FAILED
+    x_intent.last_error_code = "MANUALLY_CANCELLED"
+
+    # Execute plan
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    assert len(x_conn.publish_calls) == 0  # X skipped
+    assert len(thr_conn.publish_calls) == 1  # Threads published
+    assert pkg.distribution_targets[TargetPlatform.THREADS.value].status == TargetDeliveryStatus.DELIVERED
+    assert plan.status == PublicationPlanStatus.PARTIAL_SUCCESS
+
+
+def test_mp_16_plan_level_status_aggregation():
+    """Verify all aggregate states of PublicationPlan."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+
+    # 1. ALL_PENDING
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.ALL_PENDING
+
+    # 2. ATTEMPTING
+    plan.intents[0].status = PublicationIntentStatus.IN_FLIGHT
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.ATTEMPTING
+
+    # 3. MANUAL_RECONCILIATION_REQUIRED
+    plan.intents[0].status = PublicationIntentStatus.DELIVERY_UNKNOWN
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.MANUAL_RECONCILIATION_REQUIRED
+
+    # 4. RETRY_PENDING
+    plan.intents[0].status = PublicationIntentStatus.PENDING
+    plan.intents[0].attempt_count = 1
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.RETRY_PENDING
+
+    # 5. ALL_SUCCEEDED
+    plan.intents[0].status = PublicationIntentStatus.SUCCEEDED
+    plan.intents[1].status = PublicationIntentStatus.SUCCEEDED
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.ALL_SUCCEEDED
+
+    # 6. PARTIAL_SUCCESS
+    plan.intents[0].status = PublicationIntentStatus.SUCCEEDED
+    plan.intents[1].status = PublicationIntentStatus.FAILED
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.PARTIAL_SUCCESS
+
+    # 7. TERMINAL_FAILURE
+    plan.intents[0].status = PublicationIntentStatus.FAILED
+    plan.intents[1].status = PublicationIntentStatus.FAILED
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.TERMINAL_FAILURE
+
+    # 8. CANCELLED
+    plan.status = PublicationPlanStatus.CANCELLED
+    assert calculate_aggregate_plan_status(plan) == PublicationPlanStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_mp_17_telemetry_contains_both_independent_attempts():
+    """Multi-platform execution records two distinct delivery records with correct lineage."""
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+    )
+    x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id="x-99")
+    thr_conn = MockTestConnector(target=TargetPlatform.THREADS, publish_success=True, post_id="thr-88")
+    reg = MagicMock()
+    reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+    plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+    await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+    targets = [r.target for r in pkg.delivery_records]
+    assert TargetPlatform.X in targets
+    assert TargetPlatform.THREADS in targets
+    assert len(pkg.delivery_records) == 2
+
+
+@pytest.mark.asyncio
+async def test_mp_18_secrets_absent_from_telemetry_log_output():
+    """Connector credentials and tokens are sanitized from errors and telemetry."""
+    raw_secret = "Bearer THREADS_SECRET_TOKEN_XYZ client_secret=SEC123"
+    pkg = _make_test_package()
+    approval = OwnerApproval(
+        package_id=pkg.package_id,
+        owner_id=1001,
+        content_hash=compute_package_content_hash(pkg),
+        target_platforms=[TargetPlatform.THREADS],
+    )
+    thr_conn = MockTestConnector(
+        target=TargetPlatform.THREADS,
+        publish_success=False,
+        is_retryable=False,
+        error_code="AUTH_ERROR",
+        error_message=raw_secret,
+    )
+    plan = PublicationOrchestrator.create_plan(pkg, approval)
+    res = await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn)
+
+    assert "THREADS_SECRET_TOKEN_XYZ" not in plan.intents[0].last_error_message
+    assert "SEC123" not in plan.intents[0].last_error_message
+    assert "[REDACTED_CREDENTIAL]" in plan.intents[0].last_error_message
+    assert len(pkg.delivery_records) == 1
+    assert "THREADS_SECRET_TOKEN_XYZ" not in pkg.delivery_records[0].error_message
+
+
+# =========================================================================
 # Replay Evaluation Runner with 7 Mandatory Safety Gates
 # =========================================================================
 
@@ -700,7 +1235,7 @@ async def test_publication_replay_evaluation():
     with open(fixture_path, "r", encoding="utf-8") as f:
         scenarios = json.load(f)
 
-    assert len(scenarios) == 15, f"Expected 15 scenarios, got {len(scenarios)}"
+    assert len(scenarios) == 19, f"Expected 19 scenarios, got {len(scenarios)}"
 
     # Safety Gate Counters
     unauthorized_publications = 0
@@ -717,6 +1252,7 @@ async def test_publication_replay_evaluation():
             package_id=f"pkg-{sc_id}",
             owner_id=sc["owner_user_id"],
             x_text=sc.get("text", "Default test tweet text"),
+            threads_text=sc.get("text", "Default test threads text"),
         )
 
         # 1. Check unauthorized approval gate
@@ -825,6 +1361,93 @@ async def test_publication_replay_evaluation():
                 duplicate_publications += 1
             continue
 
+        # 8. Check Threads official publish success (Scenario 16)
+        if sc_id == "case_16_threads_official_publish_success":
+            approval = OwnerApproval(
+                package_id=pkg.package_id,
+                owner_id=sc["owner_user_id"],
+                content_hash=compute_package_content_hash(pkg),
+                target_platforms=[TargetPlatform.THREADS],
+            )
+            thr_conn = MockTestConnector(
+                target=TargetPlatform.THREADS,
+                publish_success=True,
+                post_id=sc["mock_post_id"],
+            )
+            plan = PublicationOrchestrator.create_plan(pkg, approval)
+            res = await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn)
+            if not res.success or pkg.distribution_targets[TargetPlatform.THREADS.value].status != TargetDeliveryStatus.DELIVERED:
+                terminal_state_errors += 1
+            continue
+
+        # 9. Check multi-target dual success (Scenario 17)
+        if sc_id == "case_17_multi_target_dual_success":
+            pkg.distribution_targets[TargetPlatform.YOUTUBE_COMMUNITY.value].status = TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH
+            approval = OwnerApproval(
+                package_id=pkg.package_id,
+                owner_id=sc["owner_user_id"],
+                content_hash=compute_package_content_hash(pkg),
+                target_platforms=[TargetPlatform.X, TargetPlatform.THREADS],
+            )
+            x_conn = MockTestConnector(target=TargetPlatform.X, publish_success=True, post_id=sc["x_mock_post_id"])
+            thr_conn = MockTestConnector(target=TargetPlatform.THREADS, publish_success=True, post_id=sc["threads_mock_post_id"])
+            reg = MagicMock()
+            reg.get_connector.side_effect = lambda t: x_conn if t == TargetPlatform.X else thr_conn
+
+            plan = PublicationOrchestrator.create_plan(pkg, approval, connector_registry=reg)
+            await PublicationOrchestrator.execute_plan(plan, pkg, connector_registry=reg)
+
+            if plan.status != PublicationPlanStatus.ALL_SUCCEEDED or pkg.approval_state != PackageStatus.DELIVERED:
+                terminal_state_errors += 1
+            continue
+
+        # 10. Check Threads ambiguous reconciliation (Scenario 18)
+        if sc_id == "case_18_threads_ambiguous_reconciliation_success":
+            approval = OwnerApproval(
+                package_id=pkg.package_id,
+                owner_id=sc["owner_user_id"],
+                content_hash=compute_package_content_hash(pkg),
+                target_platforms=[TargetPlatform.THREADS],
+            )
+            thr_conn = MockTestConnector(
+                target=TargetPlatform.THREADS,
+                publish_success=False,
+                is_ambiguous=True,
+                reconcile_finds_post=True,
+                post_id=sc["mock_post_id"],
+            )
+            plan = PublicationOrchestrator.create_plan(pkg, approval)
+            res = await PublicationOrchestrator.execute_intent(plan.intents[0], pkg, thr_conn)
+            if not res.success or len(thr_conn.publish_calls) > 1:
+                blind_reposts += 1
+            continue
+
+        # 11. Check target set binding violation (Scenario 19)
+        if sc_id == "case_19_target_set_binding_violation":
+            approval = OwnerApproval(
+                package_id=pkg.package_id,
+                owner_id=sc["owner_user_id"],
+                content_hash=compute_package_content_hash(pkg),
+                target_platforms=[TargetPlatform.X],
+            )
+            plan = PublicationOrchestrator.create_plan(pkg, approval)
+            thr_conn = MockTestConnector(target=TargetPlatform.THREADS)
+            threads_intent = PublicationIntent(
+                package_id=pkg.package_id,
+                job_id=pkg.job_id,
+                target=TargetPlatform.THREADS,
+                variant=OutputVariantType.THREADS_POST,
+                approved_by=sc["owner_user_id"],
+                approved_at=_utc_now(),
+                payload_hash="somehash",
+                publication_key=f"{pkg.package_id}:THREADS:THREADS_POST:somehash",
+                status=PublicationIntentStatus.PENDING,
+            )
+            res = await PublicationOrchestrator.execute_intent(threads_intent, pkg, thr_conn, approval=approval)
+            if res.success:
+                unauthorized_publications += 1
+            continue
+
     # 7 Mandatory Gates Assertion
     assert unauthorized_publications == 0, f"Gate 1 Failed: {unauthorized_publications} unauthorized publications"
     assert duplicate_publications == 0, f"Gate 2 Failed: {duplicate_publications} duplicate publications"
@@ -833,3 +1456,4 @@ async def test_publication_replay_evaluation():
     assert platform_isolation_violations == 0, f"Gate 5 Failed: {platform_isolation_violations} platform isolation violations"
     assert terminal_state_errors == 0, f"Gate 6 Failed: {terminal_state_errors} terminal state errors"
     assert unsanitized_credentials == 0, f"Gate 7 Failed: {unsanitized_credentials} credential leaks"
+

@@ -198,5 +198,62 @@
     "expected_audit_registered": true,
     "expected_credential_masking": true,
     "expected_gate_pass": true
+  },
+  {
+    "scenario_id": "case_16_threads_official_publish_success",
+    "description": "Owner approves Meta Threads target; 2-stage container creation and publish succeeds with post ID and permalink",
+    "owner_user_id": 1001,
+    "attempt_user_id": 1001,
+    "has_approval": true,
+    "target": "THREADS",
+    "text": "Threads publication expansion verified for Priority 5 Slice 2.",
+    "mock_http_status": 201,
+    "mock_post_id": "8090011829304155",
+    "expected_result": "PUBLISHED",
+    "expected_gate_pass": true
+  },
+  {
+    "scenario_id": "case_17_multi_target_dual_success",
+    "description": "Multi-target plan [X, THREADS]: both targets succeed independently, plan transitions to ALL_SUCCEEDED",
+    "owner_user_id": 1001,
+    "attempt_user_id": 1001,
+    "has_approval": true,
+    "multi_target_success": ["X", "THREADS"],
+    "x_mock_status": 201,
+    "x_mock_post_id": "9091021829304156",
+    "threads_mock_status": 201,
+    "threads_mock_post_id": "9091021829304157",
+    "expected_plan_status": "ALL_SUCCEEDED",
+    "expected_package_status": "DELIVERED",
+    "expected_gate_pass": true
+  },
+  {
+    "scenario_id": "case_18_threads_ambiguous_reconciliation_success",
+    "description": "Meta Threads publish encounters network timeout; reconciliation queries recent threads, recovers post ID, zero blind repost",
+    "owner_user_id": 1001,
+    "attempt_user_id": 1001,
+    "has_approval": true,
+    "target": "THREADS",
+    "text": "Threads ambiguous reconciliation test.",
+    "simulate_threads_timeout": true,
+    "reconciliation_confirms": true,
+    "mock_post_id": "9092031829304158",
+    "expected_result": "RECOVERED_PUBLISHED",
+    "expected_blind_reposts": 0,
+    "expected_gate_pass": true
+  },
+  {
+    "scenario_id": "case_19_target_set_binding_violation",
+    "description": "Approval granted for [X] only; unauthorized attempt to publish to THREADS is blocked by target-set binding",
+    "owner_user_id": 1001,
+    "attempt_user_id": 1001,
+    "has_approval": true,
+    "target_set_violation": true,
+    "approved_targets": ["X"],
+    "attempted_target": "THREADS",
+    "text": "Target set binding guard test.",
+    "expected_result": "BLOCKED",
+    "expected_gate_pass": true
   }
 ]
+
