@@ -1,23 +1,20 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 02:50 ICT
+Snapshot: 2026-09-07 03:10 ICT
 
-Stage: **Post-Publish Audit & Telemetry v2 — COMPLETE (Blockers Closed)**
+Stage: **Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE (Observation / Shadow Calibration Mode)**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `77264f6d6f60218daa39528f7a7663f52e307e47`.
-- Documentation-only current HEAD: documentation-only handoff commit following release `77264f6d6f60218daa39528f7a7663f52e307e47`.
-- Release commit: `77264f6` — feat(audit): enforce scheduled occurrence idempotency and observational edit telemetry.
-- Previous accepted baseline: `26abd21f053d59e47798b55b979ab088a0902176` (documentation HEAD `08502d24d4693eebbde9cccbe913d6446810b94c`).
+- Production release SHA: `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
+- Release commit: `7bb6239` — feat(outcome): implement outcome learning dataset and shadow calibration v1.
+- Previous accepted baseline: `77264f6d6f60218daa39528f7a7663f52e307e47` (documentation HEAD `99a112d44aab057534c8b3c7b0e79a2fc6b06d68`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Hosted CI verification:
-  - Runtime commit `77264f6d6f60218daa39528f7a7663f52e307e47`: CI run `34055888824` -> **SUCCESS** (51s).
-- Production image tag: `reels_bot:77264f6d6f60218daa39528f7a7663f52e307e47`.
-- Running image digest: `sha256:3f117b196b745ca83702b70f544995e0742b83bbc4ba41b819bd780fcf788209`.
-- Image build timestamp: `2026-09-06T19:46:49Z`.
-- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `77264f6d6f60218daa39528f7a7663f52e307e47`.
+- Production image tag: `reels_bot:7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
+- Running image digest: `sha256:8115853f1e7ec473954943a9c56f0bbddd7009e102f3684b1986d0524267bbd1`.
+- Image build timestamp: `2026-09-06T20:04:44Z`.
+- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
 
 ## Runtime
 
@@ -26,56 +23,59 @@ Stage: **Post-Publish Audit & Telemetry v2 — COMPLETE (Blockers Closed)**
 - Redis 7, Telegram bot, and ARQ worker are running.
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video`, `cron:reap_stale_jobs`, and `cron:cron_audit_v2_jobs`.
-- Post-canary database: `d8e70570-daa6-47eb-933d-b0ed79b243ab` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`deebe693-109d-426f-bc8c-50388bda108b`, `DELIVERED`), 3 `PublicationIntentModel` rows (`SUPPORTED_NOT_CONFIGURED` for X and Threads, `MANUAL_EXPORT_READY` for YouTube Community).
-- Post-publish audit tables: `audit_targets`, `audit_snapshots`, and `audit_events` initialized with schema indexes. 0 false/overdue audit records created during canary.
+- Post-canary database: `4faf33f3-7f73-4f4b-a3f6-15fe3dfe47b0` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`643bb64f-cdb1-4eb5-9b76-65efc6695e28`, `PARTIALLY_DELIVERED`).
+- Outcome learning tables: `outcome_observations` and `calibration_runs` initialized with schema indexes and unique constraints (`uq_outcome_observations_pub_horizon`).
+- Shadow mode verified: zero threshold mutations, zero prompt changes, `applied_recommendation_count = 0`.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
 
-## Post-Publish Audit & Telemetry v2 Architecture
+## Outcome Learning Dataset & Prioritization Calibration v1 Architecture
 
-This stage implemented a production-grade post-publish audit and telemetry system with strict idempotency and observational telemetry:
+This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritization Calibration v1 operating strictly in **Observation / Shadow Calibration Mode**:
 
-1. **Provider Lookup & Telemetry Contracts**:
-   - **X API v2**: `GET https://api.x.com/2/tweets/:id?tweet.fields=text,public_metrics`. Normalizes `impression_count`, `like_count`, `reply_count`, `retweet_count`, `quote_count`, `bookmark_count`.
-   - **Meta Threads Graph API**: `GET https://graph.threads.net/v1.0/:id?fields=id,text,permalink` and official Meta Insights endpoint `GET https://graph.threads.net/v1.0/:id/insights?metric=views,likes,replies,reposts,quotes`. Missing optional metrics safely remain `None` without crashing or injecting fake `0` baselines.
-   - **YouTube Community**: Truthfully marked `NOT_APPLICABLE_MANUAL_EXPORT` with `next_audit_at = None`.
-   - **Telegram Channels / Users**: Truthfully marked `DELETION_VERIFICATION_UNSUPPORTED` with `next_audit_at = None`. Bot-visible channel edits recorded via observational telemetry (`edited_channel_post` -> `AuditEventModel`, `EDIT_OBSERVED`) without fabricating deletion verification.
+1. **Typed Data Lineage & Observation Schema**:
+   - `OutcomeObservation` connects `publication_id`, `job_id`, `package_id`, `platform`, `variant`, `audit_horizon` (`15m`, `2h`, `12h`, `24h`, `3d`, `7d`), `router_classification`, `priority_score`, `raw_metrics`, `derived_metrics`, `content_integrity_status`, `data_quality_status`.
+   - Immutable data lineage: links back to original jobs, Router classifications, priority scores, and output variants.
+   - `AuditHorizon` enum with fixed non-overlapping evaluation windows (`15m`, `2h`, `12h`, `24h`, `3d`, `7d`). Cross-horizon pooling or direct comparisons are strictly prohibited.
+   - Truthful platform normalization: missing view counts or zero impressions yield `engagement_rate = None` (never fake zero).
+   - Data quality taxonomy: `VALID`, `INCOMPLETE_METRICS`, `INTEGRITY_COMPROMISED`, `OUTLIER_FLAGGED`, `STALE_TIMING`.
+   - Integrity status: `VERIFIED_INTACT`, `CONTENT_MODIFIED`, `CONTENT_DELETED_OR_NOT_FOUND`, `AUTH_REVOKED`, `UNKNOWN`.
 
-2. **Core Safety Gates Enforced**:
-   - **Gate 1: `auth_mistaken_for_deletion == 0`**: HTTP 401/403 (unauthorized/token revoked) is explicitly categorized as `AUTH_REQUIRED` and NEVER as `DELETED`.
-   - **Gate 2: `duplicate_snapshots == 0`**: Scheduled occurrence key idempotency (`occurrence_key = f"{target.audit_id}:{scheduled_for_iso}"`) guarantees at most one snapshot per scheduled occurrence, regardless of execution jitter, retries, or double scheduler firings.
-   - **Gate 3: `unsupported_fake_verification == 0`**: Telegram and YouTube Community are never reported as externally verified or checked for deletion.
-   - **Gate 4: `overdue_pollution_for_unavailable_connectors == 0`**: Unconfigured or manual-only targets evaluate to `NOT_APPLICABLE_*` with `next_audit_at = None`.
+2. **Data Sufficiency & Calibration Readiness**:
+   - `CalibrationReadiness` enum: `READY`, `INSUFFICIENT_DATA`, `LOW_CORRELATION`, `DISTORTED_OUTLIERS`, `SAFETY_FLOOR_VIOLATION`.
+   - `DataSufficiencyPolicy`: minimum 30 observations per platform, minimum 10 observations per router category, observation window >= 24h.
+   - Initial production database evaluation yields `INSUFFICIENT_DATA` truthfully (no simulated fake data).
 
-3. **Scheduled Occurrence vs Execution Time**:
-   - $\text{scheduled occurrence} \neq \text{checked\_at}$
-   - Identity derives strictly from logical scheduled occurrence `scheduled_for`, not actual clock time `checked_at`.
-   - Strong idempotency regressions verified: retry at different times (10:00:01 vs 10:00:18 -> 1 snapshot), double scheduler firing -> 1 persistent snapshot, crash/retry boundary -> 0 duplicate snapshots.
+3. **Outlier Guards & Robust Calibration**:
+   - Interquartile range (IQR) and percentile thresholding (top 1% / bottom 1% flagged).
+   - Trimmed means and medians for robust summary statistics.
+   - Spearman rank correlation ($\rho$) to prevent high-leverage viral outliers from skewing threshold tuning.
 
-4. **Cadence & Scheduler**:
-   - Multi-phase decaying schedule: 15 min, 2 h, 12 h, 24 h (1 day), 72 h (3 days), 7 days.
-   - Terminal cadence handling (`next_audit_at = None`).
-   - Transient backoff for HTTP 429 (`Retry-After` header parsing).
-   - Cron worker integration via ARQ (`cron_audit_v2_jobs` running every 15 min at `:05, :20, :35, :50`).
-   - Concurrency locking via `FOR UPDATE SKIP LOCKED`.
+4. **Immutable Safety Floor Protection**:
+   - High-risk content gate (Router risk floor): threshold calibration cannot relax strict fact-checking or publish policies for high-risk categories (medical, financial, high-liability claims).
+   - User delivery cannot be downgraded or disabled based on external performance stats.
+   - Shadow calibration recommendations (`publish_threshold_delta`, `deprioritize_threshold_delta`, `suggested_weights`) logged strictly in shadow mode (`applied_recommendation_count = 0`).
 
-5. **Technical Content Integrity & Safe Delta Computation**:
-   - Technical whitespace/newline normalization for lossless SHA-256 hash comparison.
-   - Actionable alerts for `DELETED_OR_NOT_FOUND`, `MODIFIED`, and `AUTH_REQUIRED`.
-   - Safe zero baseline metric delta computation (prev=0 -> pct=None).
-
-6. **Legacy Audit Isolation**:
-   - Historical records in `jobs` table (16 `DEFERRED_LEGACY`, 12 `DEFERRED`, 67 `NOT_SCHEDULED`) remain completely untouched and isolated.
-   - V2 audit engine exclusively queries `audit_targets`.
+5. **Replay Harness & 7 Mandatory Gates**:
+   - Replay harness `app/worker/outcome_replay.py` validating 14 deterministic scenarios A through N (`tests/fixtures/outcome_learning_eval.json`).
+   - Enforces 7 mandatory safety gates:
+     1. Zero cross-horizon pooling (`gate_1_zero_cross_horizon_pooling = 0`)
+     2. Zero fake zero denominators (`gate_2_zero_fake_zero_denominators = 0`)
+     3. Data sufficiency enforcement (`gate_3_data_sufficiency_enforced = True`)
+     4. Outlier isolation (`gate_4_outlier_isolation = True`)
+     5. Zero automatic policy mutations (`gate_5_zero_automatic_policy_mutations = 0`)
+     6. Immutable safety floor preservation (`gate_6_immutable_safety_floor_preservation = True`)
+     7. Lineage integrity (`gate_7_lineage_integrity = True`)
+   - All 7 gates passed (`all_gates_passed = True`).
 
 ## Automated test coverage
 
 - Canonical Clean Git Archive / Hosted CI pytest run:
-  - `352 collected`
-  - `344 passed`
-  - `1 skipped` (media test skipped honestly in clean archive where gitignored test video is absent)
+  - `372 collected`
+  - `372 passed`
   - `7 deselected`
   - `0 failed`
-- Replay evaluation suites (all 7 passing at 1.0, 110 tests passed):
+- Replay evaluation suites (all 8 passing at 1.0, 131 tests passed):
+  - **Outcome Learning Replay**: **14 deterministic scenarios** (`tests/fixtures/outcome_learning_eval.json`); zero cross-horizon pooling: `0`, zero fake zero denominators: `0`, data sufficiency enforced: `True`, outlier isolation: `True`, zero automatic policy mutations: `0`, immutable safety floor preserved: `True`, lineage integrity: `True`, all 7 gates passed: `True`.
   - **Audit Replay**: **13 deterministic scenarios** (`tests/fixtures/audit_eval.json`); `auth_mistaken_for_deletion`: `0`, `duplicate_snapshots`: `0`, `unsupported_fake_verification`: `0`, `overdue_pollution_for_unavailable_connectors`: `0`, all gates passed: `True`.
   - **Connector Replay**: **13 deterministic scenarios** (`tests/fixtures/connector_eval.json`); unauthorized publications: `0`, duplicate logical publications: `0`, stale approvals published: `0`, fake successes: `0`, retry correctness: `1.0`, all gates passed: `True`.
   - **Distribution Replay**: **10 scenarios across 10 evaluations** (`tests/fixtures/distribution_eval.json`); lifecycle correctness: `1.0`, approval enforcement: `1.0`, target status accuracy: `1.0`, unauthorized approval violations: `0`, duplicate publication violations: `0`, factual mutation violations: `0`, risk warning violations: `0`, idempotency violations: `0`, all gates passed: `True`.
@@ -86,28 +86,25 @@ This stage implemented a production-grade post-publish audit and telemetry syste
 
 ## Verified live production canary
 
-- Deployment: 2026-09-07 02:47 ICT from clean release SHA `77264f6d6f60218daa39528f7a7663f52e307e47`.
-- Canary job: `d8e70570-daa6-47eb-933d-b0ed79b243ab`.
+- Deployment: 2026-09-07 03:05 ICT from clean release SHA `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
+- Canary job: `4faf33f3-7f73-4f4b-a3f6-15fe3dfe47b0`.
 - Reel URL: `https://www.instagram.com/reel/Dc1oN9IuLys/` (user `392046103`).
 - Video validation: 720x1280 MP4, 12 keyframes visual evidence.
 - Transcription: `OK` via `gemini-3.5-transcribe` (2530 chars), no fallback.
 - Language: Russian (`ru`), confidence `0.9908`, mixed `false`, translation not required.
 - Router: `HOW_TO`, risk `MEDIUM`.
-- Priority: `overall_score=0.560`, decision `AMBIGUOUS_CONTINUE`.
+- Priority: `overall_score=0.532`, decision `AMBIGUOUS_CONTINUE` (publish threshold 0.6 intact).
 - Output Variants: 5 rendered (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`), `all_valid=true`.
 - User Delivery: `SUCCEEDED` (`TELEGRAM_LONG`).
 - Channel Delivery: `SKIPPED_DUPLICATE` (dedup preserved).
-- Content Package Created: ID `deebe693-109d-426f-bc8c-50388bda108b`, contract version `content_package_v1`.
-- Security Guard Verified: Unauthorized user `999999999` blocked with `UnauthorizedApprovalError`.
-- Owner Approval & Intent Execution:
-  - Owner `392046103` approved; `publication_intents` created with stable `publication_key` and `payload_hash`.
-  - Connector-disabled default validated: X and Threads evaluated to `SUPPORTED_NOT_CONFIGURED` without failing the job.
-  - YouTube Community evaluated to `READY_FOR_MANUAL_PUBLISH` (`MANUAL_EXPORT_READY`).
-  - Terminal package status reached: `DELIVERED`.
-  - Post-publish audit evaluation: targets for unconfigured connectors evaluated to `NOT_APPLICABLE_NOT_CONFIGURED` and YouTube to `NOT_APPLICABLE_MANUAL_EXPORT` with `next_audit_at = None`.
-  - Zero overdue audit records created in `audit_targets` (`AUDIT_TARGETS_COUNT = 0`).
+- Content Package Created: ID `643bb64f-cdb1-4eb5-9b76-65efc6695e28`, contract version `content_package_v1`.
+- Outcome Learning & Shadow Calibration:
+  - Database schema initialized: `outcome_observations` and `calibration_runs` tables verified.
+  - Unique constraint `uq_outcome_observations_pub_horizon` enforced.
+  - Shadow Calibration mode confirmed: 0 automatic mutations to production thresholds (`publish=0.6`, `deprioritize=0.4`) or Router policies.
+  - Zero overdue audit records created (`AUDIT_TARGETS_COUNT = 0`).
   - Redis queue depth: `0`.
-  - Legacy isolation: 16 historical `DEFERRED_LEGACY` rows remain undisturbed.
+  - Legacy isolation: historical rows remain undisturbed.
 
 ## Implemented production architecture
 
@@ -128,4 +125,5 @@ The active production capability is a reactive Telegram-to-ARQ pipeline featurin
 - Post-Publish Audit & Telemetry v2 (`AuditTarget`, `AuditResult`, `AuditSnapshot`, `AuditPolicy`);
 - Decaying multi-phase audit schedule (15m, 2h, 12h, 24h, 3d, 7d);
 - Strict isolation of historical legacy audit records;
-- Deterministic 13-scenario evaluation replay suite with 4 mandatory safety gates.
+- Outcome Learning Dataset & Shadow Prioritization Calibration v1 (`OutcomeObservation`, `CalibrationRun`, `DataSufficiencyPolicy`, `CalibrationRecommendation`);
+- 8 Deterministic evaluation replay suites with comprehensive mandatory safety gates.

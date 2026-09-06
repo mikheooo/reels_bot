@@ -15,9 +15,9 @@ for X, Threads, YouTube Community), and Post-Publish Audit & Telemetry v2 (decay
 monitoring, observational Telegram edit telemetry, and strict occurrence idempotency) are
 verified and complete.
 
-Current active stage is **Priority 4: Outcome Learning Dataset & Prioritization Calibration v1**
+Current stage is **Priority 4: Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE**
 operating exclusively in **Observation / Shadow Calibration Mode** without automatic mutation
-of production policies or thresholds.
+of production policies or thresholds. Next stage is Priority 5 (not started).
 
 ## PRIORITY 1: Мультиязычный анализ — COMPLETE
 **Цель:** Научить пайплайн автоматически определять язык ролика и корректно работать с английским, русским, тайским, испанским, китайским, японским.
@@ -45,9 +45,9 @@ immutable safety floor preservation, and offline evaluation suite implemented.
 - **External Platform Connectors — COMPLETE:** PublicationConnector base, XConnector (OAuth 1.0a / OAuth 2.0 PKCE / API v2), ThreadsConnector (Graph API), YouTubeCommunityConnector (manual export boundary), rate limiting, retry backoff, and connector evaluation suite.
 - **Post-Publish Audit & Telemetry v2 — COMPLETE:** AuditTargetModel, AuditSnapshotModel, AuditEventModel, multi-phase decaying cadence (15m, 2h, 12h, 24h, 3d, 7d), observational edit telemetry, scheduled occurrence idempotency, and offline audit replay suite.
 
-## PRIORITY 4: Обучение на собственной статистике — ACTIVE STAGE (Shadow Calibration Mode v1)
+## PRIORITY 4: Обучение на собственной статистике — COMPLETE (Shadow Calibration Mode v1)
 **Цель:** После публикации автоматически собирать: просмотры, CTR, удержание, лайки, комментарии, репосты. Использовать для улучшения выбора тем и стиля публикаций.
-**Scope v1:** Typed OutcomeObservation contracts, fixed horizons (15m, 2h, 12h, 24h, 3d, 7d), platform-specific normalization without fake zeros, data quality taxonomy, data sufficiency policies, outlier guards, shadow calibration engine, and offline replay suite without automatic production policy mutation.
+**Scope v1 (COMPLETE):** Typed OutcomeObservation contracts, fixed horizons (15m, 2h, 12h, 24h, 3d, 7d), platform-specific normalization without fake zeros, data quality taxonomy, data sufficiency policies, outlier guards, shadow calibration engine, and offline replay suite without automatic production policy mutation.
 
 ## PRIORITY 5: Автоматическая публикация
 **Цель:** После подтверждения автоматически публиковать в Telegram, YouTube Shorts, Instagram, TikTok, X, Threads (Единый пайплайн).
