@@ -1,0 +1,37 @@
+# Secrets — never bake into image layers.
+# Runtime receives them via compose env_file / volume mounts instead.
+.env
+.env.*
+!.env.example
+gcp-key.json
+*.pem
+
+# VCS
+.git
+.gitignore
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_tmp*/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# Local analysis artifacts
+graphify-out/
+temp_transcript.txt
+temp_prompt.txt
+
+# Media fixtures / test videos
+*.mp4
+*.mov
+*.webm
+*.mkv
+
+# Tests are not used inside the production image (see Dockerfile)
+tests/
+test_*.py
