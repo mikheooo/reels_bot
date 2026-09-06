@@ -463,8 +463,11 @@ async def execute_publication_intents(package_id: str) -> bool:
 
             if pub_result.is_retryable and intent.attempt_count < settings.publish_max_retries:
                 intent.status = PublicationIntentStatus.PENDING
-                backoff_idx = min(intent.attempt_count - 1, len(settings.publish_retry_backoff_seconds) - 1)
-                delay_sec = settings.publish_retry_backoff_seconds[backoff_idx]
+                if pub_result.retry_after_seconds and pub_result.retry_after_seconds > 0:
+                    delay_sec = pub_result.retry_after_seconds
+                else:
+                    backoff_idx = min(intent.attempt_count - 1, len(settings.publish_retry_backoff_seconds) - 1)
+                    delay_sec = settings.publish_retry_backoff_seconds[backoff_idx]
                 intent.next_retry_at = now_naive + dt_module.timedelta(seconds=delay_sec)
                 outcome = DeliveryOutcome.RETRYABLE_ERROR
             else:

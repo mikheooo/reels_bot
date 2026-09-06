@@ -76,6 +76,66 @@ class CredentialValidationResult(BaseModel):
     error_message: str | None = None
 
 
+class RateLimitInfo(BaseModel):
+    limit: int | None = None
+    remaining: int | None = None
+    reset_epoch: int | None = None
+    retry_after_seconds: int | None = None
+
+
+def extract_rate_limit_info(headers: httpx.Headers | dict[str, str] | None) -> RateLimitInfo:
+    """Extract standard rate limit metrics from provider HTTP response headers.
+
+    Extracts:
+    - x-rate-limit-limit (X / Twitter standard)
+    - x-rate-limit-remaining (X / Twitter standard)
+    - x-rate-limit-reset (X / Twitter standard, UTC epoch seconds)
+    - retry-after (HTTP standard, seconds)
+    """
+    if not headers:
+        return RateLimitInfo()
+
+    hdr = {k.lower(): v for k, v in headers.items()}
+    limit_val: int | None = None
+    remaining_val: int | None = None
+    reset_epoch_val: int | None = None
+    retry_after_val: int | None = None
+
+    if "x-rate-limit-limit" in hdr:
+        try:
+            limit_val = int(hdr["x-rate-limit-limit"])
+        except (ValueError, TypeError):
+            pass
+
+    if "x-rate-limit-remaining" in hdr:
+        try:
+            remaining_val = int(hdr["x-rate-limit-remaining"])
+        except (ValueError, TypeError):
+            pass
+
+    if "x-rate-limit-reset" in hdr:
+        try:
+            reset_epoch_val = int(hdr["x-rate-limit-reset"])
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            if reset_epoch_val > now_ts:
+                retry_after_val = reset_epoch_val - now_ts
+        except (ValueError, TypeError):
+            pass
+
+    if "retry-after" in hdr:
+        try:
+            retry_after_val = int(hdr["retry-after"])
+        except (ValueError, TypeError):
+            pass
+
+    return RateLimitInfo(
+        limit=limit_val,
+        remaining=remaining_val,
+        reset_epoch=reset_epoch_val,
+        retry_after_seconds=retry_after_val,
+    )
+
+
 class PublicationResult(BaseModel):
     success: bool
     provider_post_id: str | None = None
@@ -86,6 +146,8 @@ class PublicationResult(BaseModel):
     is_ambiguous: bool = False
     is_retryable: bool = False
     response_payload: dict[str, Any] = Field(default_factory=dict)
+    rate_limit_info: RateLimitInfo | None = None
+    retry_after_seconds: int | None = None
 
 
 class LookupResult(BaseModel):
@@ -202,7 +264,7 @@ class XConnector(PublicationConnector):
             official_endpoint="POST https://api.x.com/2/tweets",
             known_restrictions=[
                 "Text must be <= 280 characters",
-                "Rate limit 17-200 posts per 24h depending on tier",
+                "Rate limit: dynamically governed by x-rate-limit-* and Retry-After headers (tier defaults 17-200+ posts/24h)",
                 "Media upload requires separate v1.1 endpoint (deferred)",
             ],
         )
@@ -290,6 +352,7 @@ class XConnector(PublicationConnector):
                 headers=headers,
                 json=payload,
             )
+            rate_info = extract_rate_limit_info(resp.headers)
             if resp.status_code in (200, 201):
                 data = resp.json().get("data", {})
                 tweet_id = str(data.get("id", ""))
@@ -300,6 +363,8 @@ class XConnector(PublicationConnector):
                     provider_url=url,
                     http_status=resp.status_code,
                     response_payload=resp.json(),
+                    rate_limit_info=rate_info,
+                    retry_after_seconds=rate_info.retry_after_seconds,
                 )
             else:
                 is_retryable, err_code = self.classify_error(resp.status_code, resp.text)
@@ -310,6 +375,8 @@ class XConnector(PublicationConnector):
                     error_message=sanitize_sensitive_text(resp.text),
                     is_retryable=is_retryable,
                     response_payload=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {},
+                    rate_limit_info=rate_info,
+                    retry_after_seconds=rate_info.retry_after_seconds,
                 )
         except (httpx.TimeoutException, httpx.NetworkError) as net_err:
             logger.warning("X publish ambiguous timeout: %s", sanitize_sensitive_text(str(net_err)))
@@ -485,7 +552,7 @@ class ThreadsConnector(PublicationConnector):
             known_restrictions=[
                 "Two-step container publish (create container -> publish)",
                 "Text must be <= 500 characters",
-                "Rate limit 250 posts per 24h per user",
+                "Rate limit: dynamically governed by Retry-After and usage headers (default 250 posts/24h)",
                 "Programmatic post deletion is not supported by Threads API",
             ],
         )
@@ -567,6 +634,7 @@ class ThreadsConnector(PublicationConnector):
 
         try:
             c_resp = await client.post(container_url, data=container_payload)
+            c_rate_info = extract_rate_limit_info(c_resp.headers)
             if c_resp.status_code not in (200, 201):
                 is_retryable, err_code = self.classify_error(c_resp.status_code, c_resp.text)
                 return PublicationResult(
@@ -575,6 +643,8 @@ class ThreadsConnector(PublicationConnector):
                     error_code=err_code,
                     error_message=f"Container creation failed: {sanitize_sensitive_text(c_resp.text)}",
                     is_retryable=is_retryable,
+                    rate_limit_info=c_rate_info,
+                    retry_after_seconds=c_rate_info.retry_after_seconds,
                 )
 
             container_id = str(c_resp.json().get("id", ""))
@@ -584,6 +654,8 @@ class ThreadsConnector(PublicationConnector):
                     error_code="CONTAINER_ID_MISSING",
                     error_message="Threads container response did not contain an ID.",
                     is_retryable=False,
+                    rate_limit_info=c_rate_info,
+                    retry_after_seconds=c_rate_info.retry_after_seconds,
                 )
 
             # Step 2: Publish container
@@ -593,6 +665,7 @@ class ThreadsConnector(PublicationConnector):
                 "access_token": self.access_token,
             }
             p_resp = await client.post(publish_url, data=publish_payload)
+            p_rate_info = extract_rate_limit_info(p_resp.headers)
             if p_resp.status_code in (200, 201):
                 post_id = str(p_resp.json().get("id", ""))
                 url = f"https://www.threads.net/t/{post_id}" if post_id else None
@@ -602,6 +675,8 @@ class ThreadsConnector(PublicationConnector):
                     provider_url=url,
                     http_status=p_resp.status_code,
                     response_payload=p_resp.json(),
+                    rate_limit_info=p_rate_info,
+                    retry_after_seconds=p_rate_info.retry_after_seconds,
                 )
             else:
                 is_retryable, err_code = self.classify_error(p_resp.status_code, p_resp.text)
@@ -611,6 +686,8 @@ class ThreadsConnector(PublicationConnector):
                     error_code=err_code,
                     error_message=f"Container publish failed: {sanitize_sensitive_text(p_resp.text)}",
                     is_retryable=is_retryable,
+                    rate_limit_info=p_rate_info,
+                    retry_after_seconds=p_rate_info.retry_after_seconds,
                 )
 
         except (httpx.TimeoutException, httpx.NetworkError) as net_err:

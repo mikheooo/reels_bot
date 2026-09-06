@@ -114,6 +114,7 @@ async def test_get_raw_transcript_429_retry(mock_sleep, mock_delete, mock_get_fi
     
     env_vars = {f"GEMINI_API_KEY_{i}": "" for i in range(1, 10)}
     env_vars["GEMINI_API_KEY_1"] = "KEY1"
+    env_vars["GEMINI_PAID_KEY"] = ""
     
     with patch.dict("os.environ", env_vars), \
          patch("app.core.config.settings.gemini_api_key", ""), \

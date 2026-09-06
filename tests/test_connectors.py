@@ -21,9 +21,11 @@ from app.worker.connectors import (
     LookupResult,
     PublicationIntent,
     PublicationResult,
+    RateLimitInfo,
     ThreadsConnector,
     XConnector,
     YouTubeCommunityConnector,
+    extract_rate_limit_info,
     sanitize_sensitive_text,
 )
 from app.worker.content_package import (
@@ -42,6 +44,10 @@ from app.worker.content_package import (
     reconcile_package_status,
     regenerate_variant_from_canonical,
     transition_package_status,
+)
+from app.worker.distribution_evaluation import (
+    evaluate_distribution,
+    load_distribution_cases,
 )
 from app.worker.output_variants import (
     CanonicalContentResult,
@@ -528,3 +534,164 @@ def test_29_connector_replay_suite_passes():
     assert report.stale_approval_violations == 0
     assert report.fake_successes == 0
     assert report.retry_correctness == 1.0
+
+
+# Test 30: X rate limit headers parsing
+@pytest.mark.asyncio
+async def test_30_x_rate_limit_info_extraction():
+    headers = {
+        "x-rate-limit-limit": "100",
+        "x-rate-limit-remaining": "0",
+        "x-rate-limit-reset": str(int(datetime.now(timezone.utc).timestamp()) + 45),
+        "retry-after": "45",
+    }
+    rate_info = extract_rate_limit_info(headers)
+    assert rate_info.limit == 100
+    assert rate_info.remaining == 0
+    assert rate_info.retry_after_seconds == 45
+
+    connector = XConnector(bearer_token="mock_token")
+    intent = PublicationIntent.create(
+        package_id="pkg_30",
+        job_id="job_30",
+        target=TargetPlatform.X,
+        variant=OutputVariantType.X_POST,
+        approved_by=1001,
+        payload_text="Tweet rate limited test",
+    )
+    mock_resp = httpx.Response(429, headers=headers, json={"title": "Too Many Requests", "status": 429})
+    with patch.object(httpx.AsyncClient, "post", return_value=mock_resp):
+        res = await connector.publish("Tweet rate limited test", intent)
+        assert not res.success
+        assert res.is_retryable
+        assert res.error_code == "RATE_LIMITED"
+        assert res.rate_limit_info is not None
+        assert res.rate_limit_info.limit == 100
+        assert res.retry_after_seconds == 45
+
+
+# Test 31: Threads rate limit headers parsing
+@pytest.mark.asyncio
+async def test_31_threads_rate_limit_header_extraction():
+    headers = {"retry-after": "60"}
+    rate_info = extract_rate_limit_info(headers)
+    assert rate_info.retry_after_seconds == 60
+
+    connector = ThreadsConnector(access_token="mock_th_token", user_id="12345")
+    intent = PublicationIntent.create(
+        package_id="pkg_31",
+        job_id="job_31",
+        target=TargetPlatform.THREADS,
+        variant=OutputVariantType.THREADS_POST,
+        approved_by=1001,
+        payload_text="Threads rate limit test",
+    )
+    mock_resp = httpx.Response(429, headers=headers, json={"error": {"code": 4, "message": "Throttled"}})
+    with patch.object(httpx.AsyncClient, "post", return_value=mock_resp):
+        res = await connector.publish("Threads rate limit test", intent)
+        assert not res.success
+        assert res.is_retryable
+        assert res.retry_after_seconds == 60
+
+
+# Test 32: Dynamic retry_after delay in execute_publication_intents
+@pytest.mark.asyncio
+async def test_32_retry_after_delay_orchestration():
+    from app.worker.tasks import execute_publication_intents
+
+    canonical = _sample_canonical()
+    variants = generate_all_variants(canonical)
+    pkg = build_content_package("job_32", "https://instagram.com/reel/test", canonical, variants)
+    pkg, _ = approve_package(pkg, user_id=1001, expected_owner_id=1001, use_connectors=True)
+
+    intent = next(i for i in pkg.publication_intents if i.target == TargetPlatform.X)
+    intent.status = PublicationIntentStatus.PENDING
+
+    mock_connector = AsyncMock()
+    mock_connector.capabilities = MagicMock(return_value=XConnector(bearer_token="mock").capabilities())
+    mock_connector.publish = AsyncMock(return_value=PublicationResult(
+        success=False,
+        is_retryable=True,
+        error_code="RATE_LIMITED",
+        error_message="Too Many Requests",
+        retry_after_seconds=75,
+    ))
+
+    with patch("app.worker.connectors.ConnectorRegistry.get_connector", return_value=mock_connector), \
+         patch("app.worker.tasks.AsyncSessionLocal") as mock_session_cls, \
+         patch("app.worker.tasks.persist_content_package_models", new_callable=AsyncMock) as mock_persist:
+
+        mock_session = AsyncMock()
+        mock_session_cls.return_value.__aenter__.return_value = mock_session
+
+        mock_pkg_row = MagicMock()
+        mock_pkg_row.id = pkg.package_id
+        mock_pkg_row.job_id = pkg.job_id
+        mock_pkg_row.source_url = pkg.source_url
+        mock_pkg_row.contract_version = pkg.contract_version
+        mock_pkg_row.created_at = pkg.created_at
+        mock_pkg_row.status = pkg.approval_state.value
+        mock_pkg_row.language_context = {}
+        mock_pkg_row.router_result = {}
+        mock_pkg_row.priority_result = {}
+        mock_pkg_row.canonical_content = pkg.canonical_content
+        mock_pkg_row.output_variants = pkg.output_variants
+        mock_pkg_row.distribution_targets = pkg.distribution_targets
+
+        mock_session.get.return_value = mock_pkg_row
+
+        mock_intent_row = MagicMock()
+        mock_intent_row.id = intent.intent_id
+        mock_intent_row.package_id = intent.package_id
+        mock_intent_row.job_id = intent.job_id
+        mock_intent_row.target = intent.target.value
+        mock_intent_row.variant = intent.variant.value
+        mock_intent_row.approved_by = intent.approved_by
+        mock_intent_row.approved_at = intent.approved_at
+        mock_intent_row.payload_hash = intent.payload_hash
+        mock_intent_row.publication_key = intent.publication_key
+        mock_intent_row.status = PublicationIntentStatus.PENDING.value
+        mock_intent_row.attempt_count = 0
+        mock_intent_row.next_retry_at = None
+        mock_intent_row.last_error_code = None
+        mock_intent_row.last_error_message = None
+        mock_intent_row.provider_post_id = None
+        mock_intent_row.provider_url = None
+
+        intents_result = MagicMock()
+        intents_result.scalars.return_value.all.return_value = [mock_intent_row]
+
+        deliv_result = MagicMock()
+        deliv_result.scalars.return_value.all.return_value = []
+
+        mock_session.execute.side_effect = [intents_result, deliv_result]
+
+        await execute_publication_intents(pkg.package_id)
+        assert mock_connector.publish.called
+        assert mock_persist.called
+        saved_pkg = mock_persist.call_args[0][0]
+        saved_intent = next(i for i in saved_pkg.publication_intents if i.target == TargetPlatform.X)
+        assert saved_intent.status == PublicationIntentStatus.PENDING
+        assert saved_intent.next_retry_at is not None
+
+
+# Test 33: Canonical X endpoints check
+def test_33_canonical_x_endpoints():
+    connector = XConnector(bearer_token="mock_token")
+    caps = connector.capabilities()
+    assert caps.official_endpoint == "POST https://api.x.com/2/tweets"
+    assert "api.twitter.com" not in caps.official_endpoint
+    assert any("dynamically governed" in r or "x-rate-limit" in r for r in caps.known_restrictions)
+
+
+# Test 34: Distribution replay suite passes
+def test_34_distribution_replay_suite_passes():
+    cases = load_distribution_cases("tests/fixtures/distribution_eval.json")
+    report = evaluate_distribution(cases)
+    assert report.all_gates_passed
+    assert report.unauthorized_approval_violations == 0
+    assert report.duplicate_publication_violations == 0
+    assert report.factual_mutation_violations == 0
+    assert report.risk_warning_violations == 0
+    assert report.idempotency_violations == 0
+    assert report.passed_scenarios == 10
