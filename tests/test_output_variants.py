@@ -5,6 +5,8 @@ import json
 import pytest
 
 from app.worker.content_router import (
+    AuthorIntent,
+    ContentType,
     IntentScore,
     LabelScore,
     RouterDecision,
@@ -12,6 +14,7 @@ from app.worker.content_router import (
 )
 from app.worker.language import LanguageContext
 from app.worker.output_variants import (
+    HUMAN_LABEL_EXPLANATIONS,
     VARIANT_CONSTRAINTS,
     CanonicalContentResult,
     ClaimSummary,
@@ -19,6 +22,7 @@ from app.worker.output_variants import (
     OutputVariantType,
     build_canonical_content_result,
     generate_all_variants,
+    render_human_risk_explanation,
     render_telegram_long,
     render_threads_post,
     render_tldr,
@@ -590,7 +594,93 @@ def test_legacy_telegram_behavior_not_bypassing_output_variant():
     assert "🧠 **Что это такое?**" in delivery_text
     assert "🎯 **Зачем это знать?**" in delivery_text
     assert "⚖️ **Вердикт:**" in delivery_text
-    assert "Уровень риска:" in delivery_text
+    assert "Риск: Низкий" in delivery_text
+
+
+@pytest.mark.parametrize(
+    ("risk_level", "localized"),
+    [
+        ("MEDIUM", "Средний"),
+        ("HIGH", "Высокий"),
+        ("CRITICAL", "Критический"),
+    ],
+)
+def test_human_risk_level_localization(risk_level, localized):
+    explanation = render_human_risk_explanation(risk_level, [])
+    assert explanation.localized_level == localized
+
+
+@pytest.mark.parametrize(
+    ("label", "human_text"),
+    [
+        ("PROMISE_RESULT", "Автор обещает конкретный результат."),
+        ("PERSUADE", "Автор активно пытается убедить или подтолкнуть к действию."),
+        ("RECOMMEND", "Автор даёт конкретную рекомендацию."),
+    ],
+)
+def test_risk_intent_label_has_human_explanation(label, human_text):
+    explanation = render_human_risk_explanation("MEDIUM", [label])
+    assert explanation.reasons == [human_text]
+
+
+def test_human_explanations_cover_complete_router_taxonomy():
+    production_labels = set(ContentType.__args__) | set(AuthorIntent.__args__)
+    assert production_labels <= HUMAN_LABEL_EXPLANATIONS.keys()
+
+
+def test_telegram_long_hides_confidence_but_preserves_structured_scores():
+    canonical = build_canonical_content_result(
+        route=RouterDecision(
+            primary_type="PRODUCT",
+            labels=[LabelScore(label="PRODUCT", confidence=0.92)],
+            intents=[
+                IntentScore(intent="PROMISE_RESULT", confidence=0.85),
+                IntentScore(intent="PERSUADE", confidence=0.80),
+                IntentScore(intent="RECOMMEND", confidence=0.75),
+            ],
+            risk="MEDIUM",
+            summary="Обещание результата.",
+        ),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+    )
+    raw_reasons = list(canonical.risk_reasons)
+
+    rendered = render_telegram_long(canonical)
+
+    assert rendered.status == "RENDERED"
+    assert "85%" not in rendered.text
+    assert "80%" not in rendered.text
+    assert "75%" not in rendered.text
+    assert "PROMISE_RESULT" not in rendered.text
+    assert "Автор обещает конкретный результат." in rendered.text
+    assert canonical.risk_reasons == raw_reasons
+    assert canonical.model_dump()["risk_reasons"] == [
+        "PROMISE_RESULT (85%)",
+        "PERSUADE (80%)",
+        "RECOMMEND (75%)",
+    ]
+
+
+def test_medium_and_high_risk_guidance_is_actionable_and_stronger():
+    medium = render_human_risk_explanation("MEDIUM", [])
+    high = render_human_risk_explanation("HIGH", [])
+
+    assert "Перепроверь ключевые обещания" in medium.guidance
+    assert "Не действуй сразу" in high.guidance
+    assert "деньгах, здоровье" in high.guidance
+
+
+def test_unknown_risk_label_does_not_break_renderer():
+    explanation = render_human_risk_explanation(
+        "MEDIUM", ["NEW_FUTURE_LABEL (67%)"]
+    )
+
+    assert explanation.localized_level == "Средний"
+    assert explanation.reasons == [
+        "Обнаружен дополнительный значимый признак содержания."
+    ]
 
 
 def test_build_canonical_content_result_accepts_video_url():
@@ -623,5 +713,3 @@ def test_output_variants_evaluation_replay():
     assert report.language_policy_accuracy == 1.0
     assert report.platform_limit_violations == 0
     assert report.risk_warning_violations == 0
-
-

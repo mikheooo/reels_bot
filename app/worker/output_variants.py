@@ -18,6 +18,60 @@ from app.worker.specialized_analysis import SpecializedAnalysis
 CONTRACT_VERSION = "variants_v1"
 
 
+# User-facing copy for the complete production Router taxonomy. Canonical labels
+# and confidence values remain unchanged; this mapping is presentation-only.
+HUMAN_LABEL_EXPLANATIONS: dict[str, str] = {
+    "SOFTWARE_TOOL": "Ролик рассказывает о программном инструменте.",
+    "AI_SKILL_PLUGIN": "Ролик рассказывает о навыке или плагине для ИИ-инструмента.",
+    "JOB_OPPORTUNITY": "Ролик описывает вакансию или возможность заработка.",
+    "HEALTH_MEDICAL": "Ролик затрагивает здоровье или медицинские вопросы.",
+    "FITNESS": "Ролик посвящён тренировкам или физической форме.",
+    "FINANCE_INVESTMENT": "Ролик затрагивает деньги или инвестиции.",
+    "BUSINESS_IDEA": "Ролик предлагает или разбирает бизнес-идею.",
+    "PRODUCT": "Ролик рассказывает о конкретном продукте.",
+    "TRAVEL_PLACE": "Ролик рассказывает о месте или путешествии.",
+    "HOW_TO": "Ролик содержит практическую инструкцию.",
+    "NEWS_CLAIM": "Ролик сообщает новость или проверяемое актуальное утверждение.",
+    "SCIENCE_EDUCATION": "Ролик объясняет научную или образовательную тему.",
+    "OPINION": "Автор выражает личное мнение.",
+    "ENTERTAINMENT": "Ролик создан в основном для развлечения.",
+    "INFORM": "Ролик в основном сообщает информацию.",
+    "TEACH": "Ролик учит, как выполнить конкретное действие.",
+    "RECOMMEND": "Автор даёт конкретную рекомендацию.",
+    "SELL": "Автор предлагает купить продукт или услугу.",
+    "PERSUADE": "Автор активно пытается убедить или подтолкнуть к действию.",
+    "WARN": "Автор предупреждает о возможной проблеме или опасности.",
+    "PROMISE_RESULT": "Автор обещает конкретный результат.",
+    "ENTERTAIN": "Автор стремится в первую очередь развлечь зрителя.",
+}
+
+RISK_LEVEL_PRESENTATION: dict[str, tuple[str, str]] = {
+    "LOW": ("🟢", "Низкий"),
+    "MEDIUM": ("🟡", "Средний"),
+    "HIGH": ("🔴", "Высокий"),
+    # Reserved for forward-compatible rendering. CRITICAL is not added to the
+    # current Router or CanonicalContentResult taxonomies by this UX patch.
+    "CRITICAL": ("⛔", "Критический"),
+}
+
+RISK_ACTION_GUIDANCE: dict[str, str] = {
+    "LOW": "Можно воспринимать как обычную информацию, но важные факты всё равно лучше проверять.",
+    "MEDIUM": "Перепроверь ключевые обещания и не принимай решение только на основании этого ролика.",
+    "HIGH": (
+        "Не действуй сразу. Сначала проверь ключевые утверждения по независимым "
+        "источникам, особенно если речь о деньгах, здоровье или важных решениях."
+    ),
+    "CRITICAL": (
+        "Не действуй только на основании этого ролика. Нужна независимая проверка "
+        "перед любыми серьёзными действиями."
+    ),
+}
+
+_TECHNICAL_REASON_RE = re.compile(
+    r"^\s*(?P<label>[A-Z][A-Z0-9_]*)\s*(?:\(\s*\d+(?:[.,]\d+)?%\s*\))?\s*$"
+)
+
+
 class OutputVariantType(str, Enum):
     TLDR = "TLDR"
     TELEGRAM_LONG = "TELEGRAM_LONG"
@@ -142,6 +196,50 @@ class ClaimSummary(BaseModel):
     source_name: str | None = None
     source_url: str | None = None
     exact_quote: str | None = None
+
+
+class HumanRiskExplanation(BaseModel):
+    """Deterministic, presentation-only explanation of canonical risk data."""
+
+    icon: str
+    localized_level: str
+    reasons: list[str] = Field(default_factory=list)
+    guidance: str
+
+
+def render_human_risk_explanation(
+    risk_level: str,
+    risk_or_intent_labels: list[str],
+    confidence_scores: dict[str, float] | None = None,
+    category: str | None = None,
+) -> HumanRiskExplanation:
+    """Translate technical risk metadata without exposing confidence as probability."""
+    del confidence_scores, category
+
+    icon, localized_level = RISK_LEVEL_PRESENTATION.get(
+        risk_level, ("⚪", "Не определён")
+    )
+    guidance = RISK_ACTION_GUIDANCE.get(
+        risk_level,
+        "Проверь важные утверждения по независимым источникам перед принятием решения.",
+    )
+
+    reasons: list[str] = []
+    for raw_label in risk_or_intent_labels:
+        match = _TECHNICAL_REASON_RE.fullmatch(raw_label)
+        label = match.group("label") if match else raw_label.strip().upper().replace(" ", "_")
+        explanation = HUMAN_LABEL_EXPLANATIONS.get(label)
+        if explanation is None:
+            explanation = "Обнаружен дополнительный значимый признак содержания."
+        if explanation not in reasons:
+            reasons.append(explanation)
+
+    return HumanRiskExplanation(
+        icon=icon,
+        localized_level=localized_level,
+        reasons=reasons,
+        guidance=guidance,
+    )
 
 
 class CanonicalContentResult(BaseModel):
@@ -507,13 +605,24 @@ def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
     if canonical.business_summary:
         sections.append(f"💼 **Бизнес-разбор:**\n{canonical.business_summary}")
 
-    # Section 5: Риски и дисклеймеры
-    risk_icon = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}[canonical.risk_level]
-    risk_sec = [f"{risk_icon} **Уровень риска: {canonical.risk_level}**"]
+    # Section 5: Human-readable risks and deterministic action guidance.
+    human_risk = render_human_risk_explanation(
+        risk_level=canonical.risk_level,
+        risk_or_intent_labels=canonical.risk_reasons,
+        category=canonical.topic,
+    )
+    risk_sec = [f"{human_risk.icon} **Риск: {human_risk.localized_level}**"]
+    if human_risk.reasons:
+        risk_sec.append(
+            "**Почему:**\n" + "\n".join(f"• {reason}" for reason in human_risk.reasons)
+        )
+        if canonical.risk_level in {"MEDIUM", "HIGH"}:
+            risk_sec.append(
+                "_Это не вероятность обмана. Это признаки того, как построен ролик._"
+            )
     if canonical.critical_disclaimers:
         risk_sec.extend(canonical.critical_disclaimers)
-    if canonical.risk_reasons:
-        risk_sec.append("Факторы риска: " + ", ".join(canonical.risk_reasons))
+    risk_sec.append(f"**Что делать:**\n{human_risk.guidance}")
     sections.append("\n".join(risk_sec))
 
     # Section 6: Действия
@@ -772,4 +881,3 @@ def resolve_telegram_delivery_payload(
         return legacy_analysis, f"FAILED:TELEGRAM_LONG_{reason}", "FALLBACK_ANALYSIS"
 
     return legacy_analysis, "FAILED:NO_OUTPUT_VARIANTS", "FALLBACK_ANALYSIS"
-
