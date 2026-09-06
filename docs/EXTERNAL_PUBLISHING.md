@@ -1,4 +1,4 @@
-﻿# Publishing Orchestration & External Platform Connectors
+# Publishing Orchestration & External Platform Connectors
 
 ## Overview
 
@@ -21,14 +21,14 @@ The pipeline enforces:
 
 | Attribute | Specification |
 | :--- | :--- |
-| **Official Publish Endpoint** | `POST https://api.twitter.com/2/tweets` |
-| **Lookup Endpoint** | `GET https://api.twitter.com/2/tweets/:id` |
-| **Delete Endpoint** | `DELETE https://api.twitter.com/2/tweets/:id` |
-| **Reconciliation Endpoint** | `GET https://api.twitter.com/2/tweets/search/recent?query=from:{username}` |
+| **Official Publish Endpoint** | `POST https://api.x.com/2/tweets` |
+| **Lookup Endpoint** | `GET https://api.x.com/2/tweets/{id}` |
+| **Delete Endpoint** | `DELETE https://api.x.com/2/tweets/{id}` |
+| **Reconciliation Endpoint** | `GET https://api.x.com/2/users/me/tweets?max_results=5&tweet.fields=text` |
 | **Authentication Model** | OAuth 1.0a User Context (Consumer Key, Consumer Secret, Access Token, Access Token Secret) or OAuth 2.0 PKCE |
 | **Required Scopes** | `tweet.read`, `tweet.write`, `users.read` |
 | **Text Character Limit** | 280 standard characters (handled by `X_POST` constraint of <= 280 chars) |
-| **Rate Limits** | 200 tweets per 15 minutes per user (POST /2/tweets) |
+| **Rate Limits** | Header-driven (`x-rate-limit-limit`, `x-rate-limit-remaining`, `x-rate-limit-reset`, `Retry-After`); tier defaults (17-200+ tweets/24h or 15-min window) as documented fallbacks |
 | **Native Idempotency** | Supported via client request or application-level `publication_key` |
 | **Capability Status** | `CONNECTED_SUPPORTED` (when credentials set) / `SUPPORTED_NOT_CONFIGURED` (default) |
 
@@ -44,7 +44,7 @@ The pipeline enforces:
 | **Authentication Model** | Long-lived User Access Token (OAuth 2.0 User Token) |
 | **Required Scopes** | `threads_basic`, `threads_content_publish` |
 | **Text Character Limit** | 500 characters (handled by `THREADS_POST` constraint of <= 500 chars) |
-| **Rate Limits** | 250 published posts per 24-hour rolling window |
+| **Rate Limits** | Header-driven (`Retry-After`, usage headers); 250 published posts per 24-hour rolling window as documented fallback |
 | **Capability Status** | `CONNECTED_SUPPORTED` (when credentials set) / `SUPPORTED_NOT_CONFIGURED` (default) |
 
 ### 3. YouTube Community Posts
@@ -149,7 +149,7 @@ class PublicationIntent(BaseModel):
 ### 3. Invariant: Ambiguous Result Reconciliation
 - When a POST request to an external provider times out or drops the connection after sending the payload, the publication outcome is ambiguous (the post may have been created on the server before the connection dropped).
 - The connector catches timeout exceptions and enters reconciliation mode:
-  - For X: Queries `GET /2/tweets/search/recent?query=from:{username}` for a tweet containing the payload prefix.
+  - For X: Queries `GET https://api.x.com/2/users/me/tweets?max_results=5&tweet.fields=text` for recent user tweets matching payload.
   - For Threads: Queries `GET /{user-id}/threads?limit=5` for recent media.
 - If the post is confirmed present: recovers `provider_post_id` and marks `SUCCEEDED` without re-posting.
 - If confirmed absent: marks error as retryable for scheduled backoff.

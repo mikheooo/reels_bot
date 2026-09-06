@@ -1,23 +1,23 @@
-﻿# REELS_BOT — canonical project state
+# REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 01:25 ICT
+Snapshot: 2026-09-07 02:00 ICT
 
-Stage: **Publishing Orchestration & External Platform Connectors — COMPLETE**
+Stage: **External Connector Live Enablement & Controlled Publication Validation — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `f32e286bf8d939f807c18ca9fd933952ff7642a5`.
-- Documentation-only current HEAD: documentation-only handoff commit following release `f32e286bf8d939f807c18ca9fd933952ff7642a5`.
-- Release commit: `f32e286` — feat(publish): implement publishing orchestration and external platform connectors.
-- Previous accepted baseline: `9465d3beb25216dba7b33e5f3e2878d87339df51` (documentation HEAD `67f3a5fa595efa91410217c45a5400a4963575c0`).
+- Production release SHA: `29fefbcfe06ec49024758cd5d196ac0a6056fc99`.
+- Documentation-only current HEAD: documentation-only handoff commit following release `29fefbcfe06ec49024758cd5d196ac0a6056fc99`.
+- Release commit: `29fefbc` — fix(publishing): canonicalize X API host and provider-driven throttling.
+- Previous accepted baseline: `f32e286bf8d939f807c18ca9fd933952ff7642a5` (documentation HEAD `4c2b7b0dc4642dcd4a63dbe65b74a4dd4a9ddaf7`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
 - Hosted CI verification:
-  - Runtime commit `f32e286bf8d939f807c18ca9fd933952ff7642a5`: CI run `34051093765` -> **SUCCESS** (37s).
-- Production image tag: `reels_bot:f32e286bf8d939f807c18ca9fd933952ff7642a5`.
-- Running image digest: `sha256:fba440cf3c093099258080b566c0f0c43e94dcbea1dd898613a7c1881705e236`.
-- Image build timestamp: `2026-09-06T18:15:38Z`.
-- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `f32e286bf8d939f807c18ca9fd933952ff7642a5`.
+  - Runtime commit `29fefbcfe06ec49024758cd5d196ac0a6056fc99`: CI run `34053120779` -> **SUCCESS** (42s).
+- Production image tag: `reels_bot:29fefbcfe06ec49024758cd5d196ac0a6056fc99`.
+- Running image digest: `sha256:752afd4c9d49fbbaeb5154f958bb29b6fd20b7182451851e0652782d5a62e5cd`.
+- Image build timestamp: `2026-09-06T18:54:19Z`.
+- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `29fefbcfe06ec49024758cd5d196ac0a6056fc99`.
 
 ## Runtime
 
@@ -26,42 +26,67 @@ Stage: **Publishing Orchestration & External Platform Connectors — COMPLETE**
 - Redis 7, Telegram bot, and ARQ worker are running.
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video` and `reap_stale_jobs`.
-- Post-canary database: `c494df78-1926-4c24-9de9-237dbaaf67a9` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`f837d441-4c40-4be7-8a0b-e8df2ff4abb4`, `DELIVERED`), 3 `PublicationIntentModel` rows (`SUPPORTED_NOT_CONFIGURED` for X and Threads, `MANUAL_EXPORT_READY` for YouTube Community).
+- Post-canary database: `e0cafb55-2df8-480f-b4c1-629211ce1245` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`7f390083-11ab-4fe5-babb-85ad3f1b6ea4`, `DELIVERED`), 3 `PublicationIntentModel` rows (`SUPPORTED_NOT_CONFIGURED` for X and Threads, `MANUAL_EXPORT_READY` for YouTube Community).
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
 
-## Publishing Orchestration & External Platform Connectors
+## External Connector Live Enablement & Controlled Publication Validation
 
-Prior to this stage, external distribution targets were Level A (`APPROVED_NOT_CONNECTED`) and had no official API integrations, intent tracking, or retry capabilities.
-`app/worker/connectors.py`, `app/worker/content_package.py`, `app/worker/tasks.py`, `app/bot/package_handlers.py`, and `app/db/` advance the pipeline to **Level B Publication Boundary**:
+This stage verified, canonicalized, and hardened external platform distribution connectors:
 
-1. **Official Provider API Integrations**:
-   - **X API v2**: `POST /2/tweets` with OAuth 1.0a User Context, `GET /2/tweets/:id` lookup, `DELETE /2/tweets/:id` cleanup, and ambiguous timeout reconciliation via recent user timeline search.
-   - **Meta Threads Graph API**: Two-step flow (`POST /{user-id}/threads` media container creation followed by `POST /{user-id}/threads_publish`), lookup via `GET /{threads-media-id}`, and ambiguous timeout reconciliation via recent threads lookup.
-   - **YouTube Community Truthful Classification**: `UNSUPPORTED_OFFICIAL_API`. In accordance with official Google API documentation, legacy channel bulletins are retired and no public Community Post publishing endpoint exists. Zero browser automation or scraping is used; content is rendered copy-ready as `READY_FOR_MANUAL_PUBLISH`.
+1. **X Endpoint Canonicalization**:
+   - Runtime, test suite, and documentation strictly adhere to canonical X API v2 base URL `https://api.x.com`:
+     - Create: `POST https://api.x.com/2/tweets`
+     - Lookup: `GET https://api.x.com/2/tweets/{id}`
+     - Delete: `DELETE https://api.x.com/2/tweets/{id}`
+     - Identity: `GET https://api.x.com/2/users/me`
+     - Reconciliation: `GET https://api.x.com/2/users/me/tweets?max_results=5&tweet.fields=text`
+   - Zero occurrences of legacy `api.twitter.com` remain in runtime, tests, or documentation.
 
-2. **Persistent `PublicationIntent` Contract & Table**:
-   - Relational `publication_intents` table tracks publication lifecycle: `PENDING -> IN_FLIGHT -> SUCCEEDED / FAILED / DELIVERY_UNKNOWN / APPROVAL_STALE / SUPPORTED_NOT_CONFIGURED / MANUAL_EXPORT_READY`.
-   - Separates technical callback execution from asynchronous worker publication.
+2. **Rate-Limit Policy Cleanup (Header-First Throttling)**:
+   - Eliminated any static hardcoded rate-limit invariants (such as `200 posts / 15 min`).
+   - Implemented `RateLimitInfo` and `extract_rate_limit_info()` in `app/worker/connectors.py` to extract provider response headers:
+     - `x-rate-limit-limit`
+     - `x-rate-limit-remaining`
+     - `x-rate-limit-reset` (UTC epoch timestamp converted dynamically to seconds until reset)
+     - `Retry-After` (seconds)
+   - Extended `PublicationResult` with `rate_limit_info` and `retry_after_seconds`.
+   - Updated `execute_publication_intents()` in `app/worker/tasks.py` to schedule `next_retry_at` dynamically using `pub_result.retry_after_seconds` when provided by headers, falling back safely to `settings.publish_retry_backoff_seconds` only when headers are absent.
+   - Standardized Meta Threads with identical dynamic `Retry-After` header extraction, using rolling 250 posts/24h as documentation fallback only.
 
-3. **Core Safety Invariants**:
-   - **Stable Publication Idempotency**: `publication_key` (`{package_id}:{target}:{variant}:{payload_hash[:16]}`) is immutable across retries. Technical attempts increment `attempt_id` on `content_deliveries` (`retry != new publication`).
-   - **Stale Approval Protection**: Exact SHA-256 payload hash verification prevents publishing variants that were modified or regenerated after owner approval (`APPROVAL_STALE`).
-   - **Ambiguous Result Reconciliation**: Network timeouts transition to `DELIVERY_UNKNOWN` and trigger provider feed lookups to recover post IDs before permitting retries.
-   - **Provider Identity Guard**: Validates authenticated account ID against expected configuration before publishing.
-   - **Connector-Disabled Default**: Production operates smoothly without credentials; missing keys yield `SUPPORTED_NOT_CONFIGURED` without failing jobs or blocking Telegram user delivery.
-   - **Zero Secret Logging**: All logs and exceptions sanitize Authorization headers, tokens, and secrets via `sanitize_sensitive_text()`.
+3. **Credential Setup Audit & Identity Guards**:
+   - Audited `.env` and environment variables:
+     - X API credentials: `NOT_CONFIGURED`
+     - Threads credentials: `NOT_CONFIGURED`
+   - Zero secrets committed, logged, or recorded in project documentation.
+   - Provider identity guards verified: mismatched authenticated user ID or handle cleanly triggers `ACCOUNT_IDENTITY_MISMATCH` and blocks publication without dispatch.
 
-4. **Bot Review UI Evolution (`app/bot/package_handlers.py`)**:
-   - Menu presents real-time platform capability badges: `[CONNECTED]`, `[НЕ НАСТРОЕН]`, `[РУЧНОЙ ЭКСПОРТ]`.
-   - YouTube Community provides a copy-ready text view without any misleading publish action.
-   - Strict owner authorization enforced: non-owners receive permission denials on all callbacks.
+4. **Truthful Unconfigured Behavior (Phase 9)**:
+   - Verified that missing credentials evaluate truthfully to `SUPPORTED_NOT_CONFIGURED`.
+   - Telegram delivery succeeds without disruption.
+   - No fake publication records or fake IDs created (`fake_success_count = 0`).
+   - Duplicate publications count = `0`.
+   - Unauthorized publications count = `0`.
+
+5. **YouTube Community Boundary Preservation**:
+   - Maintained strict classification as `UNSUPPORTED_OFFICIAL_API` / `READY_FOR_MANUAL_PUBLISH`.
+   - Zero browser automation, scraping, or private APIs. Telegram UI contains copy-ready text view with no misleading publish action.
+
+6. **Ambiguous Result Reconciliation Safety**:
+   - Replay and unit tests verify that ambiguous network timeouts transition to `DELIVERY_UNKNOWN` and trigger provider feed lookups (`/2/users/me/tweets`) to recover post IDs before permitting retries, preventing duplicate external posts.
 
 ## Test and evaluation baseline
 
 - Clean Git archive, network-isolated verification:
   - `ruff check .` -> **all checks passed (0 errors)**.
-  - `pytest -m "not integration" -q` -> **312 passed, 1 skipped, 7 deselected, 17 warnings** (total 320 collected items).
-  - 100% of previous test collection preserved (291 items) + 29 new comprehensive connector tests in `tests/test_connectors.py`.
+  - `pytest -m "not integration" -q` -> **318 passed, 7 deselected, 17 warnings in 9.29s** (CI: **317 passed, 1 skipped, 7 deselected, 17 warnings in 5.93s**; total 325 collected items >= 320 baseline).
+  - Deterministic skipped test explanation: `test_visual_evidence.py::test_extract_keyframes_timestamp_start_middle_end` skips cleanly in CI/clean Git archives when no media file is present (`pytest.skip("No test video available")`). In local workspace where `test_vid.mp4` exists, it executes and passes, producing 318 passed.
+  - 100% of previous test collection preserved + 5 new comprehensive connector & rate-limit tests in `tests/test_connectors.py` (34 total connector tests):
+    1. `test_30_x_rate_limit_info_extraction`
+    2. `test_31_threads_rate_limit_header_extraction`
+    3. `test_32_retry_after_delay_orchestration`
+    4. `test_33_canonical_x_endpoints`
+    5. `test_34_distribution_replay_suite_passes`
+  - Hermetic test environment: isolated ambient `GEMINI_PAID_KEY` from retry unit test in `tests/test_gemini_429_retry.py`.
 - Replay evaluation suites (all 6 passing at 1.0):
   - **Connector Replay**: **13 deterministic scenarios** (`tests/fixtures/connector_eval.json`); unauthorized publications: `0`, duplicate logical publications: `0`, stale approvals published: `0`, fake successes: `0`, retry correctness: `1.0`, all gates passed: `True`.
   - **Distribution Replay**: **10 scenarios across 10 evaluations** (`tests/fixtures/distribution_eval.json`); lifecycle correctness: `1.0`, approval enforcement: `1.0`, target status accuracy: `1.0`, unauthorized approval violations: `0`, duplicate publication violations: `0`, factual mutation violations: `0`, risk warning violations: `0`, idempotency violations: `0`, all gates passed: `True`.
@@ -72,8 +97,8 @@ Prior to this stage, external distribution targets were Level A (`APPROVED_NOT_C
 
 ## Verified live production canary
 
-- Deployment: 2026-09-07 01:15 ICT from clean release SHA `f32e286bf8d939f807c18ca9fd933952ff7642a5`.
-- Canary job: `c494df78-1926-4c24-9de9-237dbaaf67a9`.
+- Deployment: 2026-09-07 01:54 ICT from clean release SHA `29fefbcfe06ec49024758cd5d196ac0a6056fc99`.
+- Canary job: `e0cafb55-2df8-480f-b4c1-629211ce1245`.
 - Reel URL: `https://www.instagram.com/reel/Dc1oN9IuLys/` (user `392046103`).
 - Video validation: 720x1280 MP4, 12 keyframes visual evidence.
 - Transcription: `OK` via `gemini-3.5-transcribe` (2530 chars), no fallback.
@@ -83,7 +108,7 @@ Prior to this stage, external distribution targets were Level A (`APPROVED_NOT_C
 - Output Variants: 5 rendered (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`), `all_valid=true`.
 - User Delivery: `SUCCEEDED` (external_id `652`, `TELEGRAM_LONG`).
 - Channel Delivery: `SKIPPED_DUPLICATE` (dedup preserved).
-- Content Package Created: ID `f837d441-4c40-4be7-8a0b-e8df2ff4abb4`, contract version `content_package_v1`.
+- Content Package Created: ID `7f390083-11ab-4fe5-babb-85ad3f1b6ea4`, contract version `content_package_v1`.
 - Security Guard Verified: Unauthorized user `999999999` blocked with `UnauthorizedApprovalError`.
 - Owner Approval & Intent Execution:
   - Owner `392046103` approved; `publication_intents` created with stable `publication_key` and `payload_hash`.
@@ -106,6 +131,8 @@ The active production capability is a reactive Telegram-to-ARQ pipeline featurin
 - Telegram user delivery bound to `TELEGRAM_LONG` with robust fallback semantics;
 - Content Package management (`ContentPackage`, `DistributionTarget`, `DeliveryRecord`);
 - Level B Publication Boundary (`PublicationConnector`, `XConnector`, `ThreadsConnector`, `YouTubeCommunityConnector`);
+- Canonical X API v2 endpoints (`https://api.x.com`);
+- Dynamic header-driven rate-limit model (`x-rate-limit-*`, `Retry-After`);
 - Persistent `PublicationIntent` lifecycle with stale approval guard and ambiguous outcome reconciliation;
 - Platform review UI with live capability badges and copy-ready YouTube manual export;
 - Complete release provenance enforcement via OCI labels and runtime verification.
