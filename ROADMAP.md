@@ -48,9 +48,10 @@ immutable safety floor preservation, and offline evaluation suite implemented.
 **Цель:** После публикации автоматически собирать: просмотры, CTR, удержание, лайки, комментарии, репосты. Использовать для улучшения выбора тем и стиля публикаций.
 **Scope v1 (COMPLETE):** Typed OutcomeObservation contracts, fixed horizons (15m, 2h, 12h, 24h, 3d, 7d), platform-specific normalization without fake zeros, data quality taxonomy, data sufficiency policies, outlier guards, shadow calibration engine, and offline replay suite without automatic production policy mutation.
 
-## PRIORITY 5: Автоматическая публикация — IN PROGRESS (Core Orchestrator & X API v2 Slice COMPLETE)
+## PRIORITY 5: Автоматическая публикация — IN PROGRESS (Slice 1 Core & Slice 2 Multi-Platform Expansion COMPLETE)
 **Цель:** После подтверждения автоматически публиковать в Telegram, YouTube Shorts, Instagram, TikTok, X, Threads (Единый пайплайн).
 **Slice 1 Baseline (2026-09-07):** Publication Orchestrator Core (`PublicationOrchestrator`), `OwnerApproval` cryptographic binding, 9-state publication state machine, crash consistency across Boundaries A-E, per-platform isolation, deterministic idempotency (`publication_key` & `attempt_key`), X API v2 controlled connector validation, and deterministic evaluation replay suite (15 scenarios, 7 safety gates). Zero autonomous publishing without owner approval.
+**Slice 2 Baseline (2026-09-07):** Multi-Platform Publication Expansion & Connector Parity (`TargetPlatform.THREADS` official Graph API integration with two-phase container publishing, user timeline reconciliation `GET /{user-id}/threads?limit=5`, capability declaration model, target-set binding on `OwnerApproval`, deterministic `PublicationPlanStatus` 8-state aggregation, preflight payload capability validation, 34/34 orchestration tests, and 19 replay scenarios across all 7 mandatory safety gates). Autonomous publishing remains strictly disabled.
 
 ## PRIORITY 6: Самообучающийся фактчекинг
 **Цель:** Если Post-Publish Audit регулярно находит ошибки: определить причину, понять где ошиблась модель, автоматически улучшать промпты, снижать количество ложных подтверждений.

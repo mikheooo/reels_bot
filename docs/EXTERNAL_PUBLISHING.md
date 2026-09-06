@@ -249,3 +249,60 @@ Each target platform maintains an independent lifecycle. If Platform A (X) succe
 - `attempt_key`: Unique per network attempt:
   `{publication_key}:attempt_{attempt_id}`
 
+---
+
+## Multi-Platform Publication Expansion & Connector Parity (Priority 5 Slice 2)
+
+Priority 5 Slice 2 elevates **Meta Threads** (`TargetPlatform.THREADS`) to full official API parity alongside X API v2, establishing a true multi-platform, owner-approved publication pipeline.
+
+### 1. Platform Selection Rationale
+- **Meta Threads**: Selected as Platform B because Meta exposes an official, documented Graph API (`POST /{user-id}/threads` followed by `POST /{user-id}/threads_publish`) with OAuth 2.0 User Access Tokens, compliant text limits (500 chars), and timeline lookup (`GET /{user-id}/threads?limit=5`).
+- **YouTube Community**: Maintained strictly at `UNSUPPORTED_OFFICIAL_API` / `MANUAL_EXPORT_READY` because Google provides no official public API endpoint for Community posts. Automated browser hacks remain strictly forbidden.
+
+### 2. Connector Capability Matrix
+
+| Capability Field | X (Twitter) API v2 | Meta Threads Graph API | YouTube Community |
+| :--- | :--- | :--- | :--- |
+| **Status** | `CONNECTED_SUPPORTED` / `SUPPORTED_NOT_CONFIGURED` | `CONNECTED_SUPPORTED` / `SUPPORTED_NOT_CONFIGURED` | `UNSUPPORTED_OFFICIAL_API` |
+| **Publication Mode** | `MANUAL_APPROVAL` | `MANUAL_APPROVAL` | `MANUAL_EXPORT` |
+| **Max Text Characters** | 280 | 500 | 2000 |
+| **Supports Text** | `True` | `True` | `False` |
+| **Supports Image** | `False` (v1 text-focused) | `False` (v1 text-focused) | `False` |
+| **Supports Video** | `False` (v1 text-focused) | `False` (v1 text-focused) | `False` |
+| **Supports Edit** | `False` | `False` | `False` |
+| **Supports Delete** | `True` (`DELETE /2/tweets/{id}`) | `False` (not in public Graph API) | `False` |
+| **Supports Lookup** | `True` (`GET /2/tweets/{id}`) | `True` (`GET /{threads-media-id}`) | `False` |
+| **Supports Timeline Reconciliation** | `True` (`GET /2/users/me/tweets?max_results=5`) | `True` (`GET /{user-id}/threads?limit=5`) | `False` |
+| **Supports Native Idempotency** | `True` (API level / publication_key) | `False` (orchestrator managed) | `False` |
+| **Max Media Count** | 0 | 0 | 0 |
+| **Supported MIME Types** | `["text/plain"]` | `["text/plain"]` | `["text/plain"]` |
+| **Rate Limit Model** | `header_driven_x_rate_limit_or_tier_fallback` | `header_driven_threads_250_rolling_24h` | `none_manual_export` |
+
+### 3. Approval Target-Set Binding Semantics
+- `OwnerApproval` contains `target_platforms: list[TargetPlatform]`.
+- Content integrity is protected by `content_hash`: a cryptographic integrity hash used to bind owner approval to exact rendered content (not a digital signature).
+- **Target Authorization Guard**: An approval is valid ONLY for its explicitly designated targets. Attempting to execute an intent for a target outside `approval.target_platforms` immediately fails with `TARGET_NOT_APPROVED` without making any network call.
+- Empty target platform lists are rejected with `TARGET_SET_EMPTY`.
+
+### 4. PublicationPlan Status Aggregation Semantics
+A multi-platform plan is never reduced to a simplistic binary boolean. The aggregate status is deterministically derived from all active intents:
+1. **`ALL_PENDING`**: All active targets are awaiting initial dispatch.
+2. **`ATTEMPTING`**: One or more active targets are currently in-flight.
+3. **`MANUAL_RECONCILIATION_REQUIRED`**: One or more targets are in ambiguous `DELIVERY_UNKNOWN` state requiring manual inspection.
+4. **`RETRY_PENDING`**: One or more targets encountered transient failures and are waiting for scheduled exponential backoff retry.
+5. **`ALL_SUCCEEDED`**: All active targets confirmed published successfully.
+6. **`PARTIAL_SUCCESS`**: At least one target succeeded and at least one target permanently failed (with no retries remaining).
+7. **`TERMINAL_FAILURE`**: All active targets permanently failed with zero successes.
+8. **`CANCELLED`**: The plan or package was explicitly revoked/cancelled.
+
+### 5. Threads Ambiguity Reconciliation
+When a Threads publication attempt experiences a network timeout or connection reset:
+1. Transition intent to `DELIVERY_UNKNOWN`.
+2. Inspect `reconcile_ambiguous_delivery()`:
+   - If `provider_post_id` is present, look up the media container via `GET /{threads-media-id}`.
+   - If missing `provider_post_id`, query recent threads via `GET /{user-id}/threads?limit=5&fields=id,text,permalink`.
+   - If the approved snippet matches a recent post, resolve as `resolved=True, published=True` and mark `SUCCEEDED` without re-posting.
+   - If definitively not in the recent timeline, resolve as `resolved=True, published=False` and permit scheduled retry.
+   - If the query fails or returns an uncertain response, resolve as `resolved=False, published=False` and escalate to `MANUAL_RECONCILIATION_REQUIRED` to eliminate any risk of blind duplicate posts.
+
+
