@@ -22,7 +22,7 @@ try {
     docker compose -f docker-compose.yml -f docker-compose.release.yml build bot
     if ($LASTEXITCODE -ne 0) { throw "Release image build failed." }
 
-    $label = docker image inspect "reels_bot:$sha" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+    $label = docker image inspect "reels_bot:$sha" --format '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}'
     if ($LASTEXITCODE -ne 0 -or $label.Trim() -ne $sha) {
         throw "Image provenance verification failed: expected $sha, got $label"
     }
