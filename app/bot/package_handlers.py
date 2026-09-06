@@ -337,6 +337,7 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
             await callback.message.answer(
                 new_text[:4096],
                 reply_markup=package_variant_keyboard(job_id, variant_name),
+                link_preview_options=types.LinkPreviewOptions(is_disabled=True),
             )
             return
 
@@ -350,10 +351,12 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                     await callback.message.edit_text(
                         job.analysis_text[:4096],
                         reply_markup=kb,
+                        link_preview_options=types.LinkPreviewOptions(is_disabled=True),
                     )
                 except Exception:
                     await callback.message.answer(
                         job.analysis_text[:4096],
                         reply_markup=kb,
+                        link_preview_options=types.LinkPreviewOptions(is_disabled=True),
                     )
             return

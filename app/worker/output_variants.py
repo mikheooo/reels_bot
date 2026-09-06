@@ -67,6 +67,16 @@ RISK_ACTION_GUIDANCE: dict[str, str] = {
     ),
 }
 
+BUSINESS_CATEGORY_EXPLANATIONS: dict[str, str] = {
+    "EDUCATIONAL": "Автор объясняет подход или навык без явной схемы продажи.",
+    "PRODUCT_PROMOTION": "Автор показывает продукт и подводит зрителя к его выбору.",
+    "LEAD_GENERATION": "Ролик привлекает потенциальных клиентов или подписчиков.",
+    "AFFILIATE_PROMOTION": "Автор продвигает сторонний продукт или партнёрское предложение.",
+    "AUDIENCE_GROWTH": "Ролик используется для роста аудитории автора.",
+    "MIXED": "Ролик сочетает полезный материал и продвижение предложения автора.",
+    "UNCLEAR": "По ролику недостаточно данных, чтобы уверенно определить бизнес-модель.",
+}
+
 _TECHNICAL_REASON_RE = re.compile(
     r"^\s*(?P<label>[A-Z][A-Z0-9_]*)\s*(?:\(\s*\d+(?:[.,]\d+)?%\s*\))?\s*$"
 )
@@ -214,7 +224,7 @@ def render_human_risk_explanation(
     category: str | None = None,
 ) -> HumanRiskExplanation:
     """Translate technical risk metadata without exposing confidence as probability."""
-    del confidence_scores, category
+    del confidence_scores
 
     icon, localized_level = RISK_LEVEL_PRESENTATION.get(
         risk_level, ("⚪", "Не определён")
@@ -229,6 +239,12 @@ def render_human_risk_explanation(
         match = _TECHNICAL_REASON_RE.fullmatch(raw_label)
         label = match.group("label") if match else raw_label.strip().upper().replace(" ", "_")
         explanation = HUMAN_LABEL_EXPLANATIONS.get(label)
+        if category == "Business Idea":
+            explanation = {
+                "TEACH": "Автор показывает пошаговый способ заработка.",
+                "PERSUADE": "Автор активно подталкивает попробовать эту схему.",
+                "RECOMMEND": "Автор рекомендует конкретные инструменты и действия.",
+            }.get(label, explanation)
         if explanation is None:
             explanation = "Обнаружен дополнительный значимый признак содержания."
         if explanation not in reasons:
@@ -514,6 +530,52 @@ def _compact_text(text: str, max_chars: int = 120) -> str:
     return cut + "…"
 
 
+def render_human_title(canonical: CanonicalContentResult, max_words: int = 12) -> str:
+    """Create a compact title from existing canonical text without another LLM call."""
+    source = canonical.what_it_is if len(canonical.title) >= 75 else canonical.title
+    title = " ".join(source.strip().split())
+    title = re.sub(
+        r"^(?:видеоролик|видео|ролик)\s+(?:с\s+бизнес-идеей|о\s+том,?\s+как|о)\s+",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(r"^заработка\b", "Заработок", title, flags=re.IGNORECASE)
+    title = re.sub(r"\bна\s+фриланс-бирже\b", "на", title, flags=re.IGNORECASE)
+    title = re.sub(r":\s*использование\s+", " с ", title, flags=re.IGNORECASE)
+    title = re.sub(
+        r"\s+для\s+генерации\s+откликов\s+заказчикам\s+и\s+запуск\s+"
+        r"рекламных\s+кампаний\s+в\s+",
+        " для откликов и ",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(r"\s+по\s+готовым\s+шаблонам\.?$", "", title, flags=re.IGNORECASE)
+    words = title.strip(" .:;-—").split()
+    short = " ".join(words[:max_words]).rstrip(".,:;-—")
+    return short[:1].upper() + short[1:] if short else "Главное из ролика"
+
+
+def render_human_business_explanation(business_summary: str) -> str:
+    """Remove internal business enums while preserving the stored assessment."""
+    match = re.match(r"^([A-Z][A-Z0-9_]*):\s*(.*)$", business_summary.strip(), re.DOTALL)
+    if not match:
+        return business_summary.strip()
+    category, summary = match.groups()
+    return summary.strip() or BUSINESS_CATEGORY_EXPLANATIONS.get(
+        category, "Бизнес-модель по ролику определить не удалось."
+    )
+
+
+def _render_next_step(step: str) -> str:
+    cleaned = " ".join(step.strip().split())
+    cleaned = re.sub(r"^Пропустить материал\.\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^При необходимости\s+", "Если тема интересна, сначала ", cleaned, flags=re.IGNORECASE
+    )
+    return cleaned or "Сверь ключевые утверждения с официальными источниками."
+
+
 def render_tldr(canonical: CanonicalContentResult) -> RenderedVariant:
     """Render 3-5 concise bullet points (TL;DR)."""
     constraints = VARIANT_CONSTRAINTS[OutputVariantType.TLDR]
@@ -562,48 +624,18 @@ def render_tldr(canonical: CanonicalContentResult) -> RenderedVariant:
 
 
 def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
-    """Render full structured Markdown for Telegram."""
+    """Render the human-facing Telegram analysis without internal metadata."""
     constraints = VARIANT_CONSTRAINTS[OutputVariantType.TELEGRAM_LONG]
     sections: list[str] = []
 
-    # Header
-    sections.append(f"📋 **Разбор: {canonical.title}**")
-
-    # Section 1: Суть
-    sections.append(
-        f"🧠 **Что это такое?**\n{canonical.what_it_is}\n\n🎯 **Зачем это знать?**\n{canonical.why_it_matters}"
-    )
-
-    # Section 2: Итог и вердикт
-    sections.append(f"⚖️ **Вердикт:**\n{canonical.summary}")
-
-    # Section 3: Проверка фактов
-    fact_lines: list[str] = ["🔎 **Фактологическая проверка:**"]
-    if canonical.verified_claims:
-        fact_lines.append("✅ **Подтверждённые данные:**")
-        for c in canonical.verified_claims:
-            line = f"- {c.statement}"
-            if c.source_url:
-                line += f" ([источник]({c.source_url}))"
-            fact_lines.append(line)
-    if canonical.disputed_claims:
-        fact_lines.append("❌ **Опровергнутые утверждения:**")
-        for c in canonical.disputed_claims:
-            line = f"- {c.statement}"
-            if c.source_url:
-                line += f" ([опровержение]({c.source_url}))"
-            fact_lines.append(line)
-    if canonical.uncertain_claims:
-        fact_lines.append("⚠️ **Не подтверждено независимыми источниками:**")
-        for c in canonical.uncertain_claims:
-            fact_lines.append(f"- {c.statement}")
-
-    if len(fact_lines) > 1:
-        sections.append("\n".join(fact_lines))
-
-    # Section 4: Бизнес-контекст (если есть)
-    if canonical.business_summary:
-        sections.append(f"💼 **Бизнес-разбор:**\n{canonical.business_summary}")
+    # 1. Compact title; 2. concise conclusion using two non-duplicated fields.
+    sections.append(f"💡 **{render_human_title(canonical)}**")
+    conclusion = _compact_text(canonical.what_it_is, 320)
+    context = _compact_text(canonical.why_it_matters, 360)
+    conclusion_parts = [conclusion]
+    if context.casefold() != conclusion.casefold():
+        conclusion_parts.append(context)
+    sections.append("⚖️ **Короткий вывод**\n\n" + "\n\n".join(conclusion_parts))
 
     # Section 5: Human-readable risks and deterministic action guidance.
     human_risk = render_human_risk_explanation(
@@ -611,29 +643,56 @@ def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
         risk_or_intent_labels=canonical.risk_reasons,
         category=canonical.topic,
     )
-    risk_sec = [f"{human_risk.icon} **Риск: {human_risk.localized_level}**"]
+    risk_sec = [f"{human_risk.icon} **Риск: {human_risk.localized_level.lower()}**"]
     if human_risk.reasons:
         risk_sec.append(
             "**Почему:**\n" + "\n".join(f"• {reason}" for reason in human_risk.reasons)
         )
         if canonical.risk_level in {"MEDIUM", "HIGH"}:
             risk_sec.append(
-                "_Это не вероятность обмана. Это признаки того, как построен ролик._"
+                "_Это не означает, что ролик — обман. Это признаки того, что к его "
+                "обещаниям стоит относиться критически._"
             )
     if canonical.critical_disclaimers:
         risk_sec.extend(canonical.critical_disclaimers)
     risk_sec.append(f"**Что делать:**\n{human_risk.guidance}")
     sections.append("\n".join(risk_sec))
 
-    # Section 6: Действия
-    if canonical.actionable_steps:
-        steps = "\n".join(f"- {step}" for step in canonical.actionable_steps)
-        sections.append(f"➡️ **Рекомендуемые шаги:**\n{steps}")
+    # 6. Fact-check keeps contradicted and insufficient-evidence states distinct.
+    fact_lines: list[str] = ["🔎 **Что удалось проверить**"]
+    if canonical.verified_claims:
+        fact_lines.append("✅ **Подтверждено**")
+        for claim in canonical.verified_claims:
+            line = f"• {claim.statement}"
+            if claim.source_url:
+                line += f" ([источник]({claim.source_url}))"
+            fact_lines.append(line)
+    if canonical.disputed_claims:
+        fact_lines.append("❌ **Опровергнуто**")
+        for claim in canonical.disputed_claims:
+            line = f"• {claim.statement}"
+            if claim.source_url:
+                line += f" ([опровержение]({claim.source_url}))"
+            fact_lines.append(line)
+    if canonical.uncertain_claims:
+        fact_lines.append("⚠️ **Не удалось независимо подтвердить**")
+        fact_lines.extend(f"• {claim.statement}" for claim in canonical.uncertain_claims)
+    if len(fact_lines) > 1:
+        sections.append("\n".join(fact_lines))
 
-    # Footer
-    sections.append(
-        f"🏷 `Приоритет: {canonical.priority_tier} ({canonical.priority_score:.2f})` · `Язык: {canonical.source_language_code}`"
-    )
+    # 7. Human business meaning; canonical enum remains in persistence.
+    if canonical.business_summary:
+        sections.append(
+            "💼 **Что здесь за бизнес-модель**\n\n"
+            + render_human_business_explanation(canonical.business_summary)
+        )
+
+    # 8. One useful next step.
+    if canonical.actionable_steps:
+        sections.append(
+            "➡️ **Если тема интересна**\n\n"
+            + _render_next_step(canonical.actionable_steps[0])
+        )
 
     text = "\n\n".join(sections)
     variant = RenderedVariant(

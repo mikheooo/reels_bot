@@ -13,7 +13,7 @@ import google.generativeai as genai
 import googleapiclient.http
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, LinkPreviewOptions
 from sqlalchemy import select
 
 from app.bot.analysis_view import analysis_keyboard
@@ -1644,6 +1644,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 chat_id=user_id,
                 text=user_delivery_text,
                 reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
             delivery_status["user"] = "SUCCEEDED" if delivery_mode == "TELEGRAM_LONG" else "SUCCEEDED_FALLBACK"
             if content_package:

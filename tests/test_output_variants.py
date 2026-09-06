@@ -23,6 +23,7 @@ from app.worker.output_variants import (
     build_canonical_content_result,
     generate_all_variants,
     render_human_risk_explanation,
+    render_human_title,
     render_telegram_long,
     render_threads_post,
     render_tldr,
@@ -138,9 +139,9 @@ def test_telegram_long_generated_correctly():
     assert res.status == "RENDERED"
     assert res.validation_passed
     assert res.character_count <= VARIANT_CONSTRAINTS[OutputVariantType.TELEGRAM_LONG].max_length
-    assert "Разбор:" in res.text
-    assert "Что это такое?" in res.text
-    assert "Вердикт:" in res.text
+    assert "💡 **Быстрый старт бота**" in res.text
+    assert "Короткий вывод" in res.text
+    assert "Разбор:" not in res.text
 
 
 # Test 3: X respects character limit
@@ -259,7 +260,8 @@ def test_uncertain_fact_remains_uncertain():
     )
     assert len(canonical.uncertain_claims) == 1
     tg_long = render_telegram_long(canonical)
-    assert "Не подтверждено независимыми источниками" in tg_long.text
+    assert "Не удалось независимо подтвердить" in tg_long.text
+    assert "Опровергнуто" not in tg_long.text
 
 
 # Test 9: Disputed fact is not presented as certain
@@ -454,7 +456,7 @@ def test_telegram_user_delivery_bound_to_telegram_long():
     assert outcome == "SUCCEEDED"
     assert text == tl_variant.text
     assert text != legacy_analysis
-    assert "📋 **Разбор: Тестовый заголовок**" in text
+    assert "💡 **Тестовый заголовок**" in text
 
 
 def test_telegram_long_rendering_failure_has_correct_completion_semantics():
@@ -590,11 +592,12 @@ def test_legacy_telegram_behavior_not_bypassing_output_variant():
 
     assert mode == "TELEGRAM_LONG"
     assert delivery_text != legacy_raw
-    assert "📋 **Разбор: Уникальный Заголовок Регрессии**" in delivery_text
-    assert "🧠 **Что это такое?**" in delivery_text
-    assert "🎯 **Зачем это знать?**" in delivery_text
-    assert "⚖️ **Вердикт:**" in delivery_text
-    assert "Риск: Низкий" in delivery_text
+    assert "💡 **Уникальный Заголовок Регрессии**" in delivery_text
+    assert "⚖️ **Короткий вывод**" in delivery_text
+    assert "Что это такое?" not in delivery_text
+    assert "Зачем это знать?" not in delivery_text
+    assert "Вердикт:" not in delivery_text
+    assert "Риск: низкий" in delivery_text
 
 
 @pytest.mark.parametrize(
@@ -681,6 +684,99 @@ def test_unknown_risk_label_does_not_break_renderer():
     assert explanation.reasons == [
         "Обнаружен дополнительный значимый признак содержания."
     ]
+
+
+def test_telegram_long_cleanup_for_kwork_example_preserves_metadata():
+    source_url = "https://github.com/deepseek-ai/DeepSeek-R1/"
+    canonical = CanonicalContentResult(
+        title=(
+            "Видеоролик с бизнес-идеей заработка на фриланс-бирже Kwork: "
+            "использование DeepSe"
+        ),
+        topic="Business Idea",
+        summary=(
+            "Маркетинговый лид-магнит, создающий иллюзию лёгкого заработка "
+            "ради привлечения подписчиков."
+        ),
+        what_it_is=(
+            "Видеоролик с бизнес-идеей заработка на фриланс-бирже Kwork: "
+            "использование DeepSeek для генерации откликов заказчикам и запуск "
+            "рекламных кампаний в Яндекс Директ по готовым шаблонам."
+        ),
+        why_it_matters=(
+            "Настройка рекламы требует опыта, а ошибки могут привести к потере "
+            "рекламного бюджета клиента."
+        ),
+        verified_claims=[
+            ClaimSummary(
+                statement="DeepSeek действительно доступен пользователям.",
+                status="подтверждено",
+                source_url=source_url,
+            )
+        ],
+        uncertain_claims=[
+            ClaimSummary(
+                statement="Схема подходит новичку без опыта.",
+                status="не проверено",
+            )
+        ],
+        actionable_steps=[
+            (
+                "Пропустить материал. При необходимости освоить Яндекс Директ "
+                "использовать официальную документацию на тестовом проекте."
+            )
+        ],
+        business_summary=(
+            "LEAD_GENERATION: Автор предлагает найти клиента на Kwork, "
+            "подготовить отклик с помощью ИИ и продать настройку Яндекс Директ."
+        ),
+        risk_level="MEDIUM",
+        risk_reasons=[
+            "PROMISE_RESULT (85%)",
+            "TEACH (80%)",
+            "PERSUADE (80%)",
+            "RECOMMEND (75%)",
+        ],
+        priority_tier="AMBIGUOUS",
+        priority_score=0.56,
+        source_language_code="ru",
+        citations=[source_url],
+    )
+
+    rendered = render_telegram_long(canonical)
+    text = rendered.text
+
+    assert rendered.status == "RENDERED"
+    assert render_human_title(canonical) == (
+        "Заработок на Kwork с DeepSeek для откликов и Яндекс Директ"
+    )
+    assert len(render_human_title(canonical).split()) <= 12
+    assert not render_human_title(canonical).endswith("DeepSe")
+    for internal_value in (
+        "LEAD_GENERATION",
+        "PROMISE_RESULT",
+        "PERSUADE",
+        "RECOMMEND",
+        "AMBIGUOUS",
+        "0.56",
+        "Язык: ru",
+        "85%",
+    ):
+        assert internal_value not in text
+    assert "Что здесь за бизнес-модель" in text
+    assert "Автор предлагает найти клиента на Kwork" in text
+    assert "Это не означает, что ролик — обман." in text
+    assert "Не удалось независимо подтвердить" in text
+    assert "Пропустить материал" not in text
+    assert "Если тема интересна, сначала освоить Яндекс Директ" in text
+    assert text.count(source_url) == 1
+    assert text.index("Короткий вывод") < text.index("Риск: средний")
+    assert text.index("Риск: средний") < text.index("Что удалось проверить")
+    assert text.index("Что удалось проверить") < text.index("Что здесь за бизнес-модель")
+    assert canonical.model_dump()["priority_tier"] == "AMBIGUOUS"
+    assert canonical.model_dump()["priority_score"] == 0.56
+    assert canonical.model_dump()["source_language_code"] == "ru"
+    assert canonical.model_dump()["risk_reasons"][0] == "PROMISE_RESULT (85%)"
 
 
 def test_build_canonical_content_result_accepts_video_url():

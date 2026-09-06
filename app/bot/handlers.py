@@ -252,6 +252,7 @@ async def handle_url(message: types.Message):
                                 analysis_keyboard(existing_job.id, sections, bool(existing_job.full_transcript))
                                 if first else None
                             ),
+                            link_preview_options=types.LinkPreviewOptions(is_disabled=True),
                         )
                         first = False
                         text = text[4096:].strip()
