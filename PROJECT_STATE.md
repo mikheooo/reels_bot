@@ -1,21 +1,22 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 03:26 ICT
+Snapshot: 2026-09-07 03:35 ICT
 
-Stage: **Telegram Human-Friendly Risk Explanation UX Patch — COMPLETE**
+Stage: **Gemini Key Rotation Priority Consistency Patch — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `02d8c3e77e4122abe897792d056e76ed467bd9b8`.
+- Production release SHA: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836`.
+- Key rotation commit: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836` — fix(gemini): unify key rotation priority.
 - UX feature commit: `05fad1e4adc7156d674528c569a88376abc2e304` — feat(telegram): explain risk in user-friendly language.
 - Release tooling fix: `02d8c3e77e4122abe897792d056e76ed467bd9b8` — fix(release): pass Docker label template on PowerShell.
-- Previous accepted baseline: `7bb62396d962551b1cb3cc78d60331d23f00c5b6` (documentation HEAD `ebc657a3a0efd64a8ee0b779b4151dcad99b5d5e`).
+- Previous accepted baseline: `02d8c3e77e4122abe897792d056e76ed467bd9b8` (documentation HEAD `9b063dffb19b6bcb4d902ccfb42c0af01f96e3ea`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Production image tag: `reels_bot:02d8c3e77e4122abe897792d056e76ed467bd9b8`.
-- Running image digest: `sha256:b91705f13b981c8b9240a3ce142d4f24e4b505270762f20664933d889ec9eed4`.
-- Image build timestamp: `2026-09-06T20:20:40Z`.
-- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `02d8c3e77e4122abe897792d056e76ed467bd9b8`.
+- Production image tag: `reels_bot:7e7a156e16a2cb9dc750b7a815fc80e4bdf12836`.
+- Running image digest: `sha256:469f0f0fc829b610da538f3af0eed81cd42f10ca62f9e0fd8521c941f0596f8b`.
+- Image build timestamp: `2026-09-06T20:33:12Z`.
+- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836`.
 
 ## Runtime
 
@@ -28,6 +29,14 @@ Stage: **Telegram Human-Friendly Risk Explanation UX Patch — COMPLETE**
 - Outcome learning tables: `outcome_observations` and `calibration_runs` initialized with schema indexes and unique constraints (`uq_outcome_observations_pub_horizon`).
 - Shadow mode verified: zero threshold mutations, zero prompt changes, `applied_recommendation_count = 0`.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
+
+## Gemini Key Rotation Priority Consistency Patch
+
+- Fact-check/analysis and transcription now use the same deterministic order: `GEMINI_API_KEY`, `GEMINI_API_KEY_1..9`, then `GEMINI_PAID_KEY` as the final fallback.
+- Duplicate key values are removed while preserving the first configured position.
+- The previous fact-check behavior that allowed `GEMINI_API_KEY_1` to shadow `GEMINI_API_KEY` is removed.
+- `.env.example` and `README.md` now document the actual runtime order.
+- Production worker inspection returned identical configured slot order for both pools and `orders_match=True`; no key values were printed or changed.
 
 ## Telegram Human-Friendly Risk Explanation UX Patch
 
@@ -82,8 +91,8 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 ## Automated test coverage
 
 - Canonical Clean Git Archive / Hosted CI pytest run:
-  - `389 collected`
-  - `382 passed`
+  - `390 collected`
+  - `383 passed`
   - `7 deselected`
   - `0 failed`
 - Replay evaluation suites (all 8 passing at 1.0, 131 tests passed):
