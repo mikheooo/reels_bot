@@ -714,6 +714,9 @@ class OutputVariantsPayload(BaseModel):
     not_renderable_count: int
     failed_count: int
 
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
 
 def generate_all_variants(canonical: CanonicalContentResult) -> OutputVariantsPayload:
     """Generate and validate all 5 canonical output variants."""
@@ -739,3 +742,31 @@ def generate_all_variants(canonical: CanonicalContentResult) -> OutputVariantsPa
         not_renderable_count=not_renderable,
         failed_count=failed,
     )
+
+
+def resolve_telegram_delivery_payload(
+    output_variants_payload: OutputVariantsPayload | None,
+    legacy_analysis: str,
+) -> tuple[str, str, str]:
+    """
+    Option A: Resolves the delivery text and status for the primary Telegram user message.
+
+    Returns:
+        (delivery_text, output_variants_outcome, delivery_mode)
+        where:
+          - delivery_text: str text to deliver to the Telegram user
+          - output_variants_outcome: 'SUCCEEDED' or 'FAILED:TELEGRAM_LONG_NOT_RENDERABLE' / 'FAILED:MISSING'
+          - delivery_mode: 'TELEGRAM_LONG' or 'FALLBACK_ANALYSIS'
+    """
+    if output_variants_payload and hasattr(output_variants_payload, "variants"):
+        tl_variant = output_variants_payload.variants.get(OutputVariantType.TELEGRAM_LONG.value)
+        if tl_variant and tl_variant.status == "RENDERED" and tl_variant.text:
+            return tl_variant.text, "SUCCEEDED", "TELEGRAM_LONG"
+
+        reason = "NOT_FOUND"
+        if tl_variant:
+            reason = tl_variant.not_renderable_code or tl_variant.failure_reason or tl_variant.status
+        return legacy_analysis, f"FAILED:TELEGRAM_LONG_{reason}", "FALLBACK_ANALYSIS"
+
+    return legacy_analysis, "FAILED:NO_OUTPUT_VARIANTS", "FALLBACK_ANALYSIS"
+

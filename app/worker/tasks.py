@@ -35,6 +35,7 @@ from app.worker.language import language_delivery_outcome, resolve_language_cont
 from app.worker.output_variants import (
     build_canonical_content_result,
     generate_all_variants,
+    resolve_telegram_delivery_payload,
 )
 from app.worker.personal_context import load_personal_context
 from app.worker.prioritization import score_content
@@ -1063,6 +1064,8 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             specialized.what_it_is[:80].strip() if specialized and specialized.what_it_is else 'Интеграция решения из видео'
         )
 
+        output_variants_payload = None
+        output_variants_data = None
         try:
             canonical_result = build_canonical_content_result(
                 route=route,
@@ -1072,14 +1075,17 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 analysis=analysis_obj,
                 raw_transcript=raw_video_text,
                 title=primary_title,
+                video_url=url,
             )
-            variants_payload = generate_all_variants(canonical_result)
-            output_variants_data = variants_payload.model_dump()
-            output_variants_delivery = "SUCCEEDED"
+            output_variants_payload = generate_all_variants(canonical_result)
+            output_variants_data = output_variants_payload.to_dict()
         except Exception as variants_err:
             logger.error(f"Output variants generation failed: {variants_err}")
             output_variants_data = None
-            output_variants_delivery = f"FAILED:{type(variants_err).__name__}"
+
+        user_delivery_text, output_variants_delivery, delivery_mode = resolve_telegram_delivery_payload(
+            output_variants_payload, analysis
+        )
 
         if qa_res is not None and not qa_res.approved:
             msg = "⚠️ Строгая проверка не пройдена. Автопубликация и создание задачи заблокированы.\nПричины:\n- " + "\n- ".join(qa_res.reasons or [])
@@ -1096,7 +1102,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             }
             await update_job_status(
                 job_id, 'REVIEW_REQUIRED', error_text=msg,
-                analysis_text=analysis, qa_reasons=qa_reasons_data,
+                analysis_text=user_delivery_text, qa_reasons=qa_reasons_data,
             )
             await set_progress(
                 job_id, "REVIEW_REQUIRED",
@@ -1106,7 +1112,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             try:
                 await bot.send_message(chat_id=user_id, text=msg)
                 await bot.send_message(
-                    chat_id=user_id, text=analysis,
+                    chat_id=user_id, text=user_delivery_text,
                     reply_markup=analysis_keyboard(job_id, list(detail_sections)),
                 )
             except Exception:
@@ -1166,11 +1172,11 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         }
         # Persist callback payload before the message containing its buttons is sent.
         await update_job_status(
-            job_id, "PROCESSING", analysis_text=analysis, qa_reasons=qa_reasons_data
+            job_id, "PROCESSING", analysis_text=user_delivery_text, qa_reasons=qa_reasons_data
         )
 
-        # Send result to user
-        logger.info(f"Sending to TG user {user_id}")
+        # Send result to user (Option A: Deliver TELEGRAM_LONG output variant)
+        logger.info(f"Sending to TG user {user_id} via {delivery_mode}")
         from aiohttp import ClientTimeout
         session = AiohttpSession(timeout=ClientTimeout(total=900))
         bot = Bot(token=settings.bot_token, session=session)
@@ -1186,10 +1192,10 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             # Compact answer is one message; detailed layers stay behind callbacks.
             await bot.send_message(
                 chat_id=user_id,
-                text=analysis,
+                text=user_delivery_text,
                 reply_markup=analysis_keyboard(job_id, list(detail_sections)),
             )
-            delivery_status["user"] = "SUCCEEDED"
+            delivery_status["user"] = "SUCCEEDED" if delivery_mode == "TELEGRAM_LONG" else "SUCCEEDED_FALLBACK"
         except Exception as user_delivery_err:
             delivery_status["user"] = f"FAILED:{type(user_delivery_err).__name__}"
             await update_job_status(job_id, "PROCESSING", delivery_status=delivery_status)

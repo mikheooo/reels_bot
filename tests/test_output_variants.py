@@ -422,3 +422,173 @@ def test_offline_variant_replay_is_green():
     assert report.invented_forbidden_facts == 0
     assert report.platform_limit_violations == 0
     assert len(report.failed_evaluations) == 0
+
+
+# --- PRODUCTION INTEGRATION & COMPLETION SEMANTICS REGRESSION TESTS ---
+
+from app.worker.output_variants import resolve_telegram_delivery_payload
+from app.worker.tasks import determine_completion_status
+
+
+def test_telegram_user_delivery_bound_to_telegram_long():
+    """Regression 1: Production Telegram user message must be bound to TELEGRAM_LONG."""
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Тестовый заголовок",
+    )
+    payload = generate_all_variants(canonical)
+    tl_variant = payload.variants["TELEGRAM_LONG"]
+    assert tl_variant.status == "RENDERED"
+
+    legacy_analysis = "Старый неструктурированный текст анализа"
+    text, outcome, mode = resolve_telegram_delivery_payload(payload, legacy_analysis)
+
+    assert mode == "TELEGRAM_LONG"
+    assert outcome == "SUCCEEDED"
+    assert text == tl_variant.text
+    assert text != legacy_analysis
+    assert "📋 **Разбор: Тестовый заголовок**" in text
+
+
+def test_telegram_long_rendering_failure_has_correct_completion_semantics():
+    """Regression 2: TELEGRAM_LONG rendering failure yields fallback and PARTIAL terminal status (no false DONE)."""
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Тест сбоя",
+    )
+    payload = generate_all_variants(canonical)
+    # Simulate TELEGRAM_LONG failure
+    payload.variants["TELEGRAM_LONG"].status = "NOT_RENDERABLE"
+    payload.variants["TELEGRAM_LONG"].not_renderable_code = "BUDGET_EXCEEDED"
+
+    legacy_analysis = "Резервный анализ для пользователя"
+    text, outcome, mode = resolve_telegram_delivery_payload(payload, legacy_analysis)
+
+    assert mode == "FALLBACK_ANALYSIS"
+    assert outcome.startswith("FAILED:TELEGRAM_LONG_")
+    assert text == legacy_analysis
+
+    # Check that completion status is PARTIAL, NEVER DONE
+    delivery_status = {
+        "user": "SUCCEEDED_FALLBACK",
+        "output_variants": outcome,
+        "channel": "NOT_APPLICABLE",
+    }
+    assert determine_completion_status(delivery_status) == "PARTIAL"
+
+
+def test_optional_x_failure_does_not_break_user_delivery():
+    """Regression 3: Optional X_POST failure does NOT break user delivery or degrade DONE status."""
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Тест опционального X",
+    )
+    payload = generate_all_variants(canonical)
+    # Simulate X_POST budget overflow
+    payload.variants["X_POST"].status = "NOT_RENDERABLE"
+    payload.variants["X_POST"].not_renderable_code = "BUDGET_EXCEEDED"
+
+    legacy_analysis = "Резервный анализ"
+    text, outcome, mode = resolve_telegram_delivery_payload(payload, legacy_analysis)
+
+    assert mode == "TELEGRAM_LONG"
+    assert outcome == "SUCCEEDED"
+    assert text == payload.variants["TELEGRAM_LONG"].text
+
+    delivery_status = {
+        "user": "SUCCEEDED",
+        "output_variants": outcome,
+        "channel": "NOT_APPLICABLE",
+    }
+    assert determine_completion_status(delivery_status) == "DONE"
+
+
+def test_optional_threads_failure_does_not_break_user_delivery():
+    """Regression 4: Optional THREADS_POST failure does NOT break user delivery or degrade DONE status."""
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Тест опционального Threads",
+    )
+    payload = generate_all_variants(canonical)
+    # Simulate THREADS_POST failure
+    payload.variants["THREADS_POST"].status = "FAILED"
+    payload.variants["THREADS_POST"].failure_reason = "INTERNAL_ERROR"
+
+    legacy_analysis = "Резервный анализ"
+    text, outcome, mode = resolve_telegram_delivery_payload(payload, legacy_analysis)
+
+    assert mode == "TELEGRAM_LONG"
+    assert outcome == "SUCCEEDED"
+    assert text == payload.variants["TELEGRAM_LONG"].text
+
+    delivery_status = {
+        "user": "SUCCEEDED",
+        "output_variants": outcome,
+        "channel": "NOT_APPLICABLE",
+    }
+    assert determine_completion_status(delivery_status) == "DONE"
+
+
+def test_optional_youtube_community_failure_does_not_break_user_delivery():
+    """Regression 5: Optional YOUTUBE_COMMUNITY failure does NOT break user delivery or degrade DONE status."""
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Тест опционального YouTube",
+    )
+    payload = generate_all_variants(canonical)
+    # Simulate YouTube failure
+    payload.variants["YOUTUBE_COMMUNITY"].status = "FAILED"
+    payload.variants["YOUTUBE_COMMUNITY"].failure_reason = "INTERNAL_ERROR"
+
+    legacy_analysis = "Резервный анализ"
+    text, outcome, mode = resolve_telegram_delivery_payload(payload, legacy_analysis)
+
+    assert mode == "TELEGRAM_LONG"
+    assert outcome == "SUCCEEDED"
+    assert text == payload.variants["TELEGRAM_LONG"].text
+
+    delivery_status = {
+        "user": "SUCCEEDED",
+        "output_variants": outcome,
+        "channel": "NOT_APPLICABLE",
+    }
+    assert determine_completion_status(delivery_status) == "DONE"
+
+
+def test_legacy_telegram_behavior_not_bypassing_output_variant():
+    """Regression 6: Legacy Telegram behavior is not bypassing parallel independent renderer path."""
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Уникальный Заголовок Регрессии",
+    )
+    payload = generate_all_variants(canonical)
+    legacy_raw = "Неструктурированный старый сырой ответ модели"
+
+    delivery_text, outcome, mode = resolve_telegram_delivery_payload(payload, legacy_raw)
+
+    assert mode == "TELEGRAM_LONG"
+    assert delivery_text != legacy_raw
+    assert "📋 **Разбор: Уникальный Заголовок Регрессии**" in delivery_text
+    assert "🧠 **Что это такое?**" in delivery_text
+    assert "🎯 **Зачем это знать?**" in delivery_text
+    assert "⚖️ **Вердикт:**" in delivery_text
+    assert "Уровень риска:" in delivery_text
+
