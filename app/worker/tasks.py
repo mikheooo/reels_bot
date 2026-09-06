@@ -663,15 +663,14 @@ async def downscale_video(input_path: str) -> str:
 
 
 def _gemini_key_pool() -> tuple[list[str], str | None, str | None]:
-    """Shared rotation pool: free-tier keys first, paid key last fallback."""
+    """Canonical rotation: main, numbered keys in order, paid fallback last."""
     main_key = getattr(settings, "gemini_api_key", None)
     if main_key:
         main_key = main_key.strip()
     paid_key = os.getenv("GEMINI_PAID_KEY")
     if paid_key:
         paid_key = paid_key.strip()
-    # pool: FREE-TIER FIRST (main + key_1..N), paid LAST as fallback when all
-    # free-tier keys are rate-limited/exhausted (cheaper at current volume).
+    # Keep this order aligned with factcheck.get_gemini_keys().
     pool = []
     if main_key:
         pool.append(main_key)

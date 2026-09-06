@@ -7,8 +7,38 @@ import httpx
 import pytest
 import respx
 
-from app.worker.factcheck import TARGET_MODEL, call_gemini_api
-from app.worker.tasks import get_raw_transcript
+from app.worker.factcheck import TARGET_MODEL, call_gemini_api, get_gemini_keys
+from app.worker.tasks import _gemini_key_pool, get_raw_transcript
+
+
+def test_analysis_and_transcription_use_same_key_order():
+    env_vars = {f"GEMINI_API_KEY_{i}": "" for i in range(1, 10)}
+    env_vars.update(
+        {
+            "GEMINI_API_KEY": "environment-main",
+            "GEMINI_API_KEY_1": "numbered-one",
+            "GEMINI_API_KEY_2": "priority-main",
+            "GEMINI_API_KEY_9": "numbered-nine",
+            "GEMINI_PAID_KEY": "paid-fallback",
+        }
+    )
+    expected = [
+        "priority-main",
+        "numbered-one",
+        "numbered-nine",
+        "paid-fallback",
+    ]
+
+    with (
+        patch.dict("os.environ", env_vars),
+        patch("app.core.config.settings.gemini_api_key", "priority-main"),
+    ):
+        assert get_gemini_keys() == expected
+        pool, main_key, paid_key = _gemini_key_pool()
+
+    assert pool == expected
+    assert main_key == "priority-main"
+    assert paid_key == "paid-fallback"
 
 
 @pytest.mark.asyncio
