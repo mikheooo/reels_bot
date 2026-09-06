@@ -31,6 +31,7 @@ temp_prompt.txt
 !package.json
 !package-lock.json
 !vacancies.json
+!tests/fixtures/*.json
 
 # Local dev scratch / probe scripts (not part of the product)
 /.pytest_tmp*/

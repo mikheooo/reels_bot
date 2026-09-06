@@ -32,6 +32,10 @@ from app.worker.factcheck import (
 )
 from app.worker.gemini_raw_log import key_alias, log_raw
 from app.worker.language import language_delivery_outcome, resolve_language_context
+from app.worker.output_variants import (
+    build_canonical_content_result,
+    generate_all_variants,
+)
 from app.worker.personal_context import load_personal_context
 from app.worker.prioritization import score_content
 from app.worker.priority_policy import (
@@ -1053,6 +1057,30 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
 
         await set_progress(job_id, "FINALIZE")
 
+        task_material = specialized.task_description if specialized else None
+        extracted_tasks = extract_routed_tasks(task_material, url=url) if policy.create_tasks else []
+        primary_title = extracted_tasks[0]['title'] if extracted_tasks else (
+            specialized.what_it_is[:80].strip() if specialized and specialized.what_it_is else 'Интеграция решения из видео'
+        )
+
+        try:
+            canonical_result = build_canonical_content_result(
+                route=route,
+                priority=priority,
+                language_context=language_context,
+                specialized=specialized,
+                analysis=analysis_obj,
+                raw_transcript=raw_video_text,
+                title=primary_title,
+            )
+            variants_payload = generate_all_variants(canonical_result)
+            output_variants_data = variants_payload.model_dump()
+            output_variants_delivery = "SUCCEEDED"
+        except Exception as variants_err:
+            logger.error(f"Output variants generation failed: {variants_err}")
+            output_variants_data = None
+            output_variants_delivery = f"FAILED:{type(variants_err).__name__}"
+
         if qa_res is not None and not qa_res.approved:
             msg = "⚠️ Строгая проверка не пройдена. Автопубликация и создание задачи заблокированы.\nПричины:\n- " + "\n- ".join(qa_res.reasons or [])
             logger.warning(msg)
@@ -1062,6 +1090,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 "router": route.model_dump(),
                 "priority": priority.model_dump(),
                 "policy": combined_policy.model_dump(),
+                "output_variants": output_variants_data,
                 "detail_sections": detail_sections,
                 "audit_history": [],
             }
@@ -1088,13 +1117,10 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
 
 
         # Tasks are a routed downstream capability, not a universal side effect.
-        task_material = specialized.task_description if specialized else None
-        extracted_tasks = extract_routed_tasks(task_material, url=url) if policy.create_tasks else []
-        primary_title = extracted_tasks[0]['title'] if extracted_tasks else 'Интеграция решения из видео'
-
         delivery_status = {
             "language": language_delivery_outcome(language_context),
             "priority": priority_delivery_outcome(priority),
+            "output_variants": output_variants_delivery,
             "user": "PENDING",
             "channel": "NOT_APPLICABLE",
             "plan": "NOT_APPLICABLE",
@@ -1132,6 +1158,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
             "language": language_context.model_dump(),
             **policy_observability_payload(route, combined_policy),
+            "output_variants": output_variants_data,
             "specialized_analysis": specialized.model_dump() if specialized else None,
             "detail_sections": detail_sections,
             "delivery_status": delivery_status,

@@ -36,3 +36,22 @@ def test_new_jobs_do_not_create_dormant_audit_schedules():
         "audit_scheduled_at": None,
         "audit_state": "DEFERRED",
     }
+
+
+def test_output_variants_failure_is_partial():
+    outcomes = {
+        "user": "SUCCEEDED",
+        "channel": "NOT_APPLICABLE",
+        "output_variants": "FAILED:ValueError",
+    }
+    assert determine_completion_status(outcomes) == "PARTIAL"
+
+
+def test_output_variants_succeeded_is_done():
+    outcomes = {
+        "user": "SUCCEEDED",
+        "channel": "NOT_APPLICABLE",
+        "output_variants": "SUCCEEDED",
+    }
+    assert determine_completion_status(outcomes) == "DONE"
+

@@ -1,0 +1,174 @@
+[
+  {
+    "id": "case_01_simple_how_to",
+    "scenario": "simple_how_to",
+    "title": "Как создать Telegram-бота за 5 минут",
+    "primary_type": "HOW_TO",
+    "risk": "LOW",
+    "what_it_is": "Инструкция по регистрации и базовой настройке Telegram-бота через BotFather.",
+    "why_it_matters": "Позволяет быстро автоматизировать рутинные уведомления без сторонних сервисов.",
+    "summary": "Рабочая инструкция: бот регистрируется через официальный BotFather, после чего токен передается в скрипт.",
+    "verified_claims": [
+      "Токен бота выдается бесплатно через официального @BotFather."
+    ],
+    "disputed_claims": [],
+    "actionable_steps": [
+      "Открыть @BotFather в Telegram, отправить /newbot и сохранить полученный API token."
+    ],
+    "source_language": "ru",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["BotFather", "токен"],
+    "forbidden_facts": ["платная подписка", "излечивает"],
+    "expected_disclaimer": false
+  },
+  {
+    "id": "case_02_complex_how_to",
+    "scenario": "complex_how_to_steps",
+    "title": "Локальный запуск LLM через Ollama на Mac",
+    "primary_type": "HOW_TO",
+    "risk": "LOW",
+    "what_it_is": "Гайд по локальному развертыванию нейросети Llama 3 с использованием Ollama на процессорах Apple Silicon.",
+    "why_it_matters": "Обеспечивает приватность данных и бесплатную работу модели без облачных API.",
+    "summary": "Пошаговая инструкция по установке Ollama и загрузке открытых моделей с квантованием 4-bit.",
+    "verified_claims": [
+      "Ollama работает локально и не отправляет промпты на внешние серверы."
+    ],
+    "disputed_claims": [],
+    "actionable_steps": [
+      "Установить Ollama командой brew install ollama и запустить ollama run llama3."
+    ],
+    "source_language": "ru",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["Ollama", "локально"],
+    "forbidden_facts": ["обязательна подписка OpenAI"],
+    "expected_disclaimer": false
+  },
+  {
+    "id": "case_03_high_risk_medical",
+    "scenario": "factual_high_risk_medical",
+    "title": "Лечение диабета 1 типа содой и лимоном",
+    "primary_type": "HEALTH_MEDICAL",
+    "risk": "HIGH",
+    "what_it_is": "Псевдонаучный совет об отказе от инсулинотерапии в пользу пищевой соды.",
+    "why_it_matters": "Опасная дезинформация, угрожающая жизни пациентов с сахарным диабетом.",
+    "summary": "Опасный миф: отказ от инсулина приводит к диабетическому кетоацидозу и летальному исходу.",
+    "verified_claims": [],
+    "disputed_claims": [
+      "Раствор соды полностью восстанавливает выработку инсулина бета-клетками."
+    ],
+    "actionable_steps": [
+      "Не прекращать назначенную эндокринологом терапию и опираться на доказательную медицину."
+    ],
+    "source_language": "ru",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["опровергнуто", "врач"],
+    "forbidden_facts": ["сода лечит диабет", "инсулин не нужен"],
+    "expected_disclaimer": true
+  },
+  {
+    "id": "case_04_business_idea",
+    "scenario": "business_idea",
+    "title": "Агентство автоматизации бизнес-процессов на n8n",
+    "primary_type": "BUSINESS_IDEA",
+    "risk": "MEDIUM",
+    "what_it_is": "Бизнес-модель продажи внедрения сценариев n8n малому бизнесу за ежемесячный фикс.",
+    "why_it_matters": "Реальный спрос на оптимизацию рутины, но высокая конкуренция и риски поддержки.",
+    "summary": "Жизнеспособная сервисная модель, требующая подтвержденных навыков интеграции API и поиска клиентов.",
+    "verified_claims": [
+      "n8n позволяет настраивать интеграции сервисов без написания бэкенда с нуля."
+    ],
+    "disputed_claims": [],
+    "actionable_steps": [
+      "Собрать типовой кейс интеграции CRM с Telegram и предложить первым 3 клиентам."
+    ],
+    "source_language": "ru",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["n8n", "автоматизаци"],
+    "forbidden_facts": ["гарантированный миллион за неделю"],
+    "expected_disclaimer": false
+  },
+  {
+    "id": "case_05_entertainment",
+    "scenario": "low_priority_entertainment",
+    "title": "Кот играет на пианино мелодию из Интерстеллар",
+    "primary_type": "ENTERTAINMENT",
+    "risk": "LOW",
+    "what_it_is": "Вирусное юмористическое видео с домашним питомцем под наложенный саундтрек.",
+    "why_it_matters": "Развлекательный контент без практической или технической ценности.",
+    "summary": "Развлекательный ролик для поднятия настроения; технических задач и рекомендаций нет.",
+    "verified_claims": [],
+    "disputed_claims": [],
+    "actionable_steps": [],
+    "source_language": "ru",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["Кот"],
+    "forbidden_facts": ["научное открытие"],
+    "expected_disclaimer": false
+  },
+  {
+    "id": "case_06_disputed_finance",
+    "scenario": "disputed_claim",
+    "title": "Гарантированные 100% в месяц на секретном крипто-роботе",
+    "primary_type": "FINANCE_INVESTMENT",
+    "risk": "HIGH",
+    "what_it_is": "Реклама сомнительного бота для автотрейдинга с обещанием пассивного дохода без просадок.",
+    "why_it_matters": "Высокая вероятность потери средств по схеме финансовой пирамиды.",
+    "summary": "Обещание фиксированной доходности 100% в месяц экономически нереализуемо и опровергнуто регуляторами.",
+    "verified_claims": [],
+    "disputed_claims": [
+      "Алгоритм гарантирует 100% прибыль ежемесячно при любых движениях рынка."
+    ],
+    "actionable_steps": [
+      "Не переводить депозиты на анонимные смарт-контракты и проверять лицензии регулятора."
+    ],
+    "source_language": "ru",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["опровергнуто", "риск"],
+    "forbidden_facts": ["гарантированная прибыль", "без риска"],
+    "expected_disclaimer": true
+  },
+  {
+    "id": "case_07_multilingual_source",
+    "scenario": "multilingual_source",
+    "title": "Deploy FastAPI with Docker and Poetry",
+    "primary_type": "SOFTWARE_TOOL",
+    "risk": "LOW",
+    "what_it_is": "Англоязычный туториал по сборке легковесного контейнера с FastAPI через Poetry multi-stage build.",
+    "why_it_matters": "Помогает сократить размер продакшн-образа и ускорить развертывание сервиса.",
+    "summary": "Практическое руководство по контейнеризации Python-приложений с кэшированием зависимостей.",
+    "verified_claims": [
+      "Многоэтапная сборка (multi-stage build) уменьшает размер итогового Docker-образа."
+    ],
+    "disputed_claims": [],
+    "actionable_steps": [
+      "Разделить Dockerfile на этапы builder и runner с копированием только wheel-пакетов."
+    ],
+    "source_language": "en",
+    "expected_x_renderable": true,
+    "mandatory_facts": ["FastAPI", "Docker"],
+    "forbidden_facts": [],
+    "expected_disclaimer": false
+  },
+  {
+    "id": "case_08_budget_overflow_not_renderable",
+    "scenario": "long_analysis_budget_exceeded",
+    "title": "Комплексный протокол реабилитации после травм позвоночника с фармакологической поддержкой и физиотерапией",
+    "primary_type": "HEALTH_MEDICAL",
+    "risk": "HIGH",
+    "what_it_is": "Обширный медицинский протокол упражнений и применения сильнодействующих рецептурных препаратов при межпозвоночных грыжах в острой фазе.",
+    "why_it_matters": "Самолечение по видео при острых корешковых синдромах чревато необратимыми парезами и инвалидизацией.",
+    "summary": "Критический анализ: комплекс включает опасные осевые нагрузки и несертифицированные схемы медикаментов, требующие экстренной очной госпитализации.",
+    "verified_claims": [],
+    "disputed_claims": [
+      "Ежедневная ударная осевая тракция позвоночника с одновременным приемом высококонцентрированных солевых ванн и авторских растительных экстрактов полностью и гарантированно устраняет секвестрированную межпозвоночную грыжу и острый корешковый синдром без нейрохирургического вмешательства."
+    ],
+    "actionable_steps": [
+      "Срочно пройти МРТ-диагностику и обратиться к профильному нейрохирургу или неврологу в стационаре."
+    ],
+    "source_language": "ru",
+    "expected_x_renderable": false,
+    "mandatory_facts": ["опровергнуто", "врач"],
+    "forbidden_facts": ["грыжа проходит сама от ванн"],
+    "expected_disclaimer": true
+  }
+]
