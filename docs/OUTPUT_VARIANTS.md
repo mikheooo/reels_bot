@@ -31,7 +31,13 @@ media analysis
   -> jobs.delivery_status["output_variants"] = "SUCCEEDED"
 ```
 
-Telegram user delivery and channel delivery continue to function independently using their existing delivery semantics.
+### Production Telegram delivery integration (Option A)
+
+Telegram user delivery is directly bound to the `TELEGRAM_LONG` output variant:
+1. `resolve_telegram_delivery_payload(payload, legacy_analysis)` evaluates variant rendering status.
+2. If `TELEGRAM_LONG` is successfully rendered (`status == "RENDERED"`), its text is delivered to the user as `user_delivery_text`, and persisted as `jobs.analysis_text`.
+3. If `TELEGRAM_LONG` fails to render (`FAILED` or `NOT_RENDERABLE`), user delivery gracefully falls back to legacy analysis text, marks `delivery_status["user"] = "SUCCEEDED_FALLBACK"`, and `delivery_status["output_variants"] = "FAILED:TELEGRAM_LONG_..."`. The job terminal completion status resolves to `PARTIAL` (never a false `DONE`).
+4. Failures in optional external variants (`X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`) do not degrade user delivery or block `DONE`.
 
 ---
 
