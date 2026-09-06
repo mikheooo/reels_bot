@@ -7,8 +7,11 @@ Production is the reactive Telegram analysis pipeline documented in
 semantics are current capabilities. Prioritization is connected to Router policy
 and controls only usefulness-oriented optional actions; it cannot relax safety
 requirements or hide the user result. Multilingual analysis has an explicit
-source-preserving contract and offline equivalence evaluation. Post-Publish
-Audit and the content-factory design are deferred and must not be described as
+source-preserving contract and offline equivalence evaluation. Multiple output
+variants contract (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`)
+is deterministically rendered, validated against platform constraints, and persisted in
+the database with offline evaluation replay gating. External auto-publishing, Post-Publish
+Audit, and the content-factory design remain deferred and must not be described as
 active production capabilities.
 
 ## PRIORITY 1: Мультиязычный анализ
@@ -26,6 +29,8 @@ optional user-selectable output language remain future scopes.
 
 ## PRIORITY 3: Несколько вариантов постов
 **Цель:** После анализа автоматически генерировать: короткий пост, подробный пост, Telegram, X, Threads, YouTube Community. AI должен выбирать лучший вариант.
+
+**Baseline 2026-09-06:** typed CanonicalContentResult, deterministic renderers for TLDR, TELEGRAM_LONG, X_POST, THREADS_POST, and YOUTUBE_COMMUNITY, declarative platform constraints (VARIANT_CONSTRAINTS), budget overflow handling without blind slicing, persistence under jobs.qa_reasons.output_variants, and offline evaluation replay suite implemented. External auto-publishing remains manual/deferred.
 
 ## PRIORITY 4: Обучение на собственной статистике
 **Цель:** После публикации автоматически собирать: просмотры, CTR, удержание, лайки, комментарии, репосты. Использовать для улучшения выбора тем и стиля публикаций.

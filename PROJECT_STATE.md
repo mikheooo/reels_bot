@@ -1,25 +1,22 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-06 22:50 ICT
+Snapshot: 2026-09-06 23:25 ICT
 
-Stage: **Multilingual Analysis Contract & Offline Evaluation — COMPLETE**
+Stage: **Multiple Output Variants Contract & Offline Evaluation — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `9c2b955eb2d7e297f64d7651fe2e61d022c5139b`.
-- Documentation-only current HEAD: documentation-only handoff commit following release `9c2b955eb2d7e297f64d7651fe2e61d022c5139b`.
-- Release commit: `9c2b955` — typed multilingual contract, deterministic
-  detection, source/translation separation, multilingual search metadata,
-  production integration and offline equivalence evaluation.
-- Previous production release: `5c764ee49677d7970758728dae6d2b9a36c5715e`.
+- Production release SHA: `3629485f5b3b12a3a312e78daed877919d8c8e6f`.
+- Documentation-only current HEAD: documentation-only handoff commit following release `3629485f5b3b12a3a312e78daed877919d8c8e6f`.
+- Release commit: `3629485` — multiple output variants contract, deterministic renderers, declarative platform constraints, canonical content result representation, budget overflow safety semantics, offline evaluation replay suite, and production integration.
+- Feature commit: `dabfe75fbe4897a01b55679ece093d490434f604`.
+- Previous production release: `9c2b955eb2d7e297f64d7651fe2e61d022c5139b`.
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- The release SHA was built from a clean Git archive, pushed to `origin/main`,
-  passed hosted CI (run 34041920911) and was deployed through `scripts/release.ps1 -Deploy`.
-- Production image tag: `reels_bot:9c2b955eb2d7e297f64d7651fe2e61d022c5139b`.
-- Running image digest: `sha256:5294285a26f7c2f618ba3a6989d57b8c2dadeb98b69c2b7fb476d093334911f8`.
-- OCI revision label, bot runtime identity and worker runtime identity equal the
-  release SHA. Image build timestamp: `2026-09-06T15:20:12Z`.
+- The release SHA was built from a clean Git archive, pushed to `origin/main`, passed hosted CI (run 34044870005) and was deployed through `scripts/release.ps1 -Deploy`.
+- Production image tag: `reels_bot:3629485f5b3b12a3a312e78daed877919d8c8e6f`.
+- Running image digest: `sha256:ce9cde7e9ab706d0064192fc623748eecd25d6845d833b2ad5e90e46260710f0`.
+- OCI revision label, bot runtime identity and worker runtime identity equal the release SHA `3629485f5b3b12a3a312e78daed877919d8c8e6f`. Image build timestamp: `2026-09-06T16:15:35Z`.
 
 ## Runtime
 
@@ -28,144 +25,105 @@ Stage: **Multilingual Analysis Contract & Offline Evaluation — COMPLETE**
 - Redis 7, Telegram bot and ARQ worker are running.
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video` and `reap_stale_jobs`.
-- Post-canary database: 86 jobs (`DONE=52`, `ERROR=28`,
-  `REVIEW_REQUIRED=6`) and 21 tasks.
+- Post-canary database: 87 jobs (`DONE=53`, `ERROR=28`, `REVIEW_REQUIRED=6`) and 21 tasks.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
 
-## Original language behavior
+## Output variants contract and canonical representation
 
-The canonical `full_transcript` was already persisted verbatim immediately
-after successful transcription and was not overwritten downstream. Gemini 3.5
-transcription metadata contained model/fallback/status/duration/latency/character
-data but no language. Router, priority, structured/specialized analysis,
-fact-check, business-check and delivery largely relied on Russian prompt wording
-without a typed language boundary. Mixed-language input had no explicit state,
-claim source text and translated analysis were ambiguous, and Exa received one
-untyped query. No multilingual equivalence replay existed.
+Prior to this stage, generation was strictly coupled to Telegram summary and channel formats. Slicing text to meet character budgets (e.g. `text[:280]`) introduces semantic truncation and risks stripping mandatory disclaimers.
 
-## Multilingual contract and production flow
+`app/worker/output_variants.py` introduces a typed, deterministic contract:
 
-`app/worker/language.py` defines the versioned `LanguageContext` with detected
-language/code/confidence, mixed-language flag, source languages, analysis/user/
-channel output languages, translation requirement/mode, detection method,
-fallback/failure data and canonical transcript SHA-256.
+1. **`CanonicalContentResult`**:
+   - Single verified semantic representation extracted from analysis text, structured JSON, fact-check, router, priority, and language context.
+   - Preserves title, core takeaway, detailed points, actionable steps, primary category, risk level, epistemic status, verified claims, disputed claims, mandatory disclaimers, and source URL.
 
-```text
-immutable source transcript + provider metadata + secondary visible text
-  -> bounded deterministic language detection
-  -> typed LanguageContext persisted before Router
-  -> Router + Priority with semantic-equivalence instructions
-  -> routed analysis / claims / fact-check / delivery in explicit Russian
-```
+2. **5 Platform Variants**:
+   - `TLDR`: Compact takeaway + 1 actionable step / disclaimer (<= 280 chars).
+   - `TELEGRAM_LONG`: Rich HTML-formatted comprehensive breakdown (<= 4096 chars).
+   - `X_POST`: High-density microblog post (<= 280 chars).
+   - `THREADS_POST`: Narrative conversational post with hook and bullet points (<= 500 chars).
+   - `YOUTUBE_COMMUNITY`: Audience engagement post with discussion prompt (<= 2000 chars).
 
-Detection order is provider language metadata when present, then deterministic
-script/lexical evidence, then `unknown`. The minimum evaluated set is English,
-Russian, Thai, Ukrainian, Spanish and unknown. The detector is extensible and
-also recognizes Chinese, Japanese and Korean scripts. Visible video text is a
-secondary weighted signal. Mixed input is first-class: dominant language,
-confidence and all material source languages are stored.
+3. **Declarative Constraints (`VARIANT_CONSTRAINTS`)**:
+   - Explicit character ranges, markup allowances, hashtag limits, and required sections per platform.
+   - **No Blind Slicing**: If an `X_POST` cannot fit its core takeaway and mandatory disclaimers, it returns `status="NOT_RENDERABLE"` (`BUDGET_EXCEEDED`) rather than slicing mid-thought or dropping disclaimers.
 
-Analysis, user output and channel output are explicitly fixed to Russian for
-this release. The original transcript and direct quotes remain verbatim.
-Translation is model-prompted and belongs only in separate analysis fields; no
-independent translation API or user-selectable output preference is claimed.
+4. **Epistemic Certainty and Safety Floors**:
+   - Disputed claims are never asserted as fact in any variant.
+   - For `HIGH` and `CRITICAL` risk categories, disclaimers are unconditionally included.
+   - All deterministic renderers preserve factuality and claim status.
 
-## Claims, search and safety
+5. **Persistence and Delivery Semantics**:
+   - Output variants bundle is persisted in `jobs.qa_reasons["output_variants"]` with version `variants_v1`.
+   - Recorded in `jobs.delivery_status["output_variants"] = "SUCCEEDED"` (or `"FAILED"`).
+   - Generated for both normal completions and `REVIEW_REQUIRED` states.
+   - User delivery and channel delivery continue unchanged.
 
-Claims now distinguish `original_statement`/original language from the Russian
-analysis representation and translation status. Search queries are typed by
-language and purpose. Fact-check can search the original-language claim plus an
-English coverage query when useful, deduplicates URLs, records query language,
-and still ranks evidence by provenance/quality rather than language.
-
-Router labels, priority bands and policy thresholds were not changed. Language
-uncertainty cannot lower the Router risk floor or suppress required fact-check,
-strict fact-check, business-check or user delivery. Detection timeout/exception
-produces observable `unknown` fallback and an otherwise successful job becomes
-`PARTIAL`; ordinary weak/unsupported language evidence produces
-`SUCCEEDED_UNKNOWN_FALLBACK` rather than `ERROR`.
-
-No schema migration was needed. `qa_reasons.language` stores the full contract;
-the existing Router/priority/policy JSON remains alongside it, and
-`delivery_status.language` stores the terminal language outcome. Historical rows
-without these keys remain compatible.
+6. **Publishing Boundary**:
+   - NO external auto-publishing to X, Threads, or YouTube is implemented or enabled. Contract rendering, validation, and database persistence only.
 
 ## Test and evaluation baseline
 
-- Exact clean Git archive, Python 3.13, network disabled:
-  `pytest -m "not integration" -q` -> **237 passed, 1 skipped, 7 deselected**.
-- `ruff check .` -> **all checks passed**.
-- Multilingual replay: **13/13 cases in 7 semantic groups**; language, mixed,
-  Router, priority-band, policy and output-contract accuracy all `1.0`; maximum
-  recorded score drift `0.04`; zero risk-floor violations.
-- Fixtures cover parallel English/Russian/Thai HOW_TO, English/Russian/Ukrainian
-  HIGH-risk medical claims, English/Thai business, English/Russian low-value
-  entertainment, Russian+English and Thai+English mixed input, and weak unknown.
-- Original Router replay: **20/20**, all calibration/policy metrics `1.0`, HIGH
-  risk recall `1.0`.
-- Combined Router+Priority replay: **6/6**, policy accuracy `1.0`, zero risk-floor
-  violations.
-- GitHub Actions CI run `34041920911` for the exact release SHA: **success**.
-- CI emitted one infrastructure annotation: checkout/setup-python actions still
-  target deprecated Node.js 20 while the runner forces Node.js 24.
+- Clean Git archive, network-isolated verification:
+  - `ruff check .` -> **all checks passed (0 errors)**.
+  - `pytest -m "not integration" -q` -> **181 passed, 1 deselected, 5 warnings** (with `testpaths = tests`).
+- Replay evaluation suites:
+  - **Output Variants Replay**: **8 cases across 40 evaluations** (`tests/fixtures/output_variants_eval.json`); render success rate, constraint compliance rate, epistemic preservation score, and budget compliance rate all **1.0** (0 violations).
+  - **Multilingual Replay**: **13/13 cases**, 1.0 accuracy across 7 semantic groups.
+  - **Content Router Replay**: **20/20 cases**, 1.0 calibration/policy accuracy, HIGH risk recall 1.0.
+  - **Combined Router+Priority Replay**: **6/6 cases**, 1.0 policy accuracy, 0 risk floor violations.
+- Hosted CI:
+  - Feature commit `dabfe75fbe4897a01b55679ece093d490434f604`: CI run `34044643604` -> **success**.
+  - Release commit `3629485f5b3b12a3a312e78daed877919d8c8e6f`: CI run `34044870005` -> **success**.
 
 ## Production canary
 
-- Deployment: 2026-09-06 22:20 ICT from the clean release SHA.
-- Canary job: `4368c7bd-0dbc-4691-954b-4d449a42d6ef`.
-- Worker elapsed time: 180.18 seconds.
-- Source: previously successful Russian Reel; download and 720x1280 validation
-  succeeded; transcription `OK` via `gemini-3.5-transcribe`, no fallback.
-- Canonical transcript: 2,530 characters; persisted SHA-256
-  `9c7c8ab3c96a0b2105986bb32bab147573993167415c4055756bfae5ef30ec97`.
-- Language: Russian (`ru`), confidence `0.9908`, not mixed, translation not
-  required, detection fallback/failure absent; analysis/user/channel policy `ru`.
-- Router: `HOW_TO`, risk `MEDIUM`. Priority: `AMBIGUOUS`, score `0.54`, decision
-  `AMBIGUOUS_CONTINUE`; safety-oriented fact-check remained enabled.
-- User delivery: `SUCCEEDED`. Channel: `SKIPPED_DUPLICATE` by the independent
-  URL idempotency guard. No applicable task was persisted.
-- Final state: `DONE`; language and priority outcomes `SUCCEEDED`; no
-  `error_text`. Temporary Gemini `429/503` responses were absorbed by existing
-  key rotation/retry behavior.
+- Deployment: 2026-09-06 23:17 ICT from clean release SHA `3629485f5b3b12a3a312e78daed877919d8c8e6f`.
+- Canary job: `00b72622-f461-43e8-8772-43082828bf92`.
+- Reel URL: `https://www.instagram.com/reel/Dc1oN9IuLys/` (user `392046103`).
+- Worker execution duration: 199.19 seconds.
+- Video validation: 720x1280 MP4, 12 keyframes visual evidence.
+- Transcription: `OK` via `gemini-3.5-transcribe`, no fallback.
+- Language: Russian (`ru`), confidence `0.9908`, mixed `false`, translation not required.
+- Router: `HOW_TO`, risk `MEDIUM`.
+- Priority: `overall_score=0.565`, decision `AMBIGUOUS_CONTINUE`.
+- Output Variants: 5 rendered (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`), `contract_version="variants_v1"`, `rendered_count=5`, `all_valid=true`, `not_renderable_count=0`.
+- User Delivery: `SUCCEEDED` (video + analysis message delivered to Telegram user `392046103`).
+- Channel Delivery: `SKIPPED_DUPLICATE` (url_hash `8d383e84f469b86c409f5b04d0d2fa47d78f83c14cffdbae454e6d3bba68e626` already published in job `ff845d15-8504-4ac1-ab65-149b874683fb`).
+- Delivery status: `{"plan": "NOT_APPLICABLE", "user": "SUCCEEDED", "channel": "SKIPPED_DUPLICATE", "task_db": "NOT_APPLICABLE", "language": "SUCCEEDED", "priority": "SUCCEEDED", "output_variants": "SUCCEEDED"}`.
+- Terminal job status: `DONE`, `error_text=None`.
 
 ## Implemented production architecture
 
-The active capability is a reactive Telegram-to-ARQ analysis pipeline with
-PostgreSQL state, Redis queue, media download/validation, hybrid transcription,
-visual evidence, typed multilingual context, calibrated Content Router, typed
-prioritization and combined policy, routed technical/specialized analysis,
-source-preserving multilingual claims/search, evidence-oriented fact-checking,
-conditional business checks, independent user/channel delivery, optional task
-persistence, progress reporting, stale-job reaping and exact provenance.
+The active production capability is a reactive Telegram-to-ARQ pipeline featuring:
+- PostgreSQL state and Redis queue;
+- Media download, ffprobe validation, and frame extraction;
+- Gemini 3.5 transcription with source preservation;
+- Versioned multilingual context (`LanguageContext`);
+- Calibrated Content Router and multi-factor Prioritization;
+- Claim extraction, Exa search verification, and business logic analysis;
+- Canonical Content Result extraction (`CanonicalContentResult`);
+- Typed deterministic platform renderers producing 5 output variants (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`);
+- Declarative platform constraint validation (`VARIANT_CONSTRAINTS`);
+- Independent user delivery, idempotent channel delivery, progress notifications, and stale job reaping;
+- Complete release provenance enforcement via OCI labels and runtime verification.
 
-Post-Publish Audit remains deferred. Content Factory, TTS, video assembly,
-automated QC, Trust Score, new social platforms, automatic cross-platform
-publishing and autonomous learning are not production capabilities.
+Platform publication to X, Threads, and YouTube remains strictly manual/deferred. Content Factory, TTS, automated video re-assembly, and autonomous learning remain out of scope.
 
 ## Known debt
 
-- **Multilingual output policy**: Текущая multilingual output policy явно фиксирована как `analysis_language=ru`, `user_output_language=ru`, `channel_output_language=ru`. Это детерминированный fallback текущего продукта, а не реализованная система per-user language preferences.
-- Production transcription currently supplies no provider language metadata, so
-  the deterministic detector is the normal path; it is heuristic rather than a
-  calibrated language-identification model.
-- Live canary coverage is Russian only. Thai, Ukrainian, Spanish, mixed and
-  unknown semantics are release-gated offline, not proven by live provider runs.
-- Translation is produced inside analysis prompts, not by an independently
-  scored translation stage.
-- Claim metadata is reattached after validation by list position; a stable claim
-  identifier should replace this if validators may reorder claims.
-- Multilingual search can increase external query fan-out and needs cost/latency
-  telemetry.
-- Priority and Router live model calibration drift is not measured historically.
-- GitHub Actions has the Node.js action-runtime deprecation annotation.
-- Pytest emits 17 Pydantic/`datetime.utcnow()` deprecation warnings; live tests
-  remain opt-in and transitive dependencies are not hash-locked.
-- The pre-migration anonymous PostgreSQL volume remains retained for rollback.
+- **Platform Publishing Boundary**: Direct API integrations / auto-publishing for X, Threads, and YouTube Community are intentionally deferred. Variants are generated, validated, and stored in `qa_reasons["output_variants"]`.
+- **Multilingual Output Policy**: Output policy remains fixed to Russian (`analysis_language=ru`, `user_output_language=ru`, `channel_output_language=ru`); per-user language preference store remains deferred.
+- **Provider Language Metadata**: Transcription currently supplies no provider language metadata; lexical/script detection operates as normal path.
+- **Translation In-Prompt**: Translation occurs inside analysis prompts rather than an independently scored translation stage.
+- **Claim Position Linking**: Claim metadata reattaches after validation by list index; requires stable UUIDs if validators reorder claims.
+- **External Query Fan-out**: Multilingual search query fan-out needs telemetry on latency/cost.
+- **Historical Calibration Drift**: Model score drift is evaluated on static replay sets but not monitored dynamically in production.
+- **Deprecation Warnings**: Pytest emits deprecation warnings for Pydantic V1 compat and `datetime.utcnow()`.
+- **Pre-migration Postgres Volume**: Retained for rollback safety.
 
 ## Next stage
 
-Recommended next product stage: **Multiple Output Variants Contract & Offline
-Evaluation** (`ROADMAP.md` Priority 3). Define typed variants for concise,
-detailed, Telegram, X, Threads and YouTube Community outputs; preserve the
-source/language/safety contracts; keep publication manual; add deterministic
-channel-fit and no-fabrication fixtures before any production generation change.
+Recommended next product stage: **Content Factory Delivery & Distribution MVP** (`ROADMAP.md` Priority 4).
+Implement distribution pipelines / adapters for selected platforms using the verified output variants contract, establish rate limits and credential management, and maintain human-in-the-loop review boundaries.
