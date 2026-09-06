@@ -214,13 +214,8 @@ async def downscale_video(input_path: str) -> str:
 
 
 
-async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0) -> str:
-    """Extract raw transcript with multi-round Gemini key rotation.
-
-    Rotation pool includes the MAIN GEMINI_API_KEY even when GEMINI_API_KEY_1..N
-    are set (the main key used to be shadowed). Every generateContent attempt is
-    logged RAW (status + body + timestamps + key alias) to gemini_rotation_debug.log.
-    """
+def _gemini_key_pool() -> tuple[list[str], str | None, str | None]:
+    """Shared rotation pool: free-tier keys first, paid key last fallback."""
     main_key = getattr(settings, "gemini_api_key", None)
     if main_key:
         main_key = main_key.strip()
@@ -240,6 +235,17 @@ async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: fl
                 pool.append(k)
     if paid_key and paid_key not in pool:
         pool.append(paid_key)
+    return pool, main_key, paid_key
+
+
+async def transcribe_with_legacy_gemini(file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0) -> str:
+    """Extract raw transcript with multi-round Gemini key rotation.
+
+    Rotation pool includes the MAIN GEMINI_API_KEY even when GEMINI_API_KEY_1..N
+    are set (the main key used to be shadowed). Every generateContent attempt is
+    logged RAW (status + body + timestamps + key alias) to gemini_rotation_debug.log.
+    """
+    pool, main_key, paid_key = _gemini_key_pool()
     if not pool:
         raise RuntimeError("No GEMINI_API_KEY set")
 
@@ -351,6 +357,40 @@ async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: fl
             await asyncio.sleep(wait_time)
 
     raise last_error or Exception("All API keys failed in get_raw_transcript")
+
+
+async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0) -> str:
+    """Hybrid orchestrator (public entry point, signature unchanged).
+
+    Primary: Gemini 3.5 Transcribe (verbatim). On failure or suspiciously
+    short output -> fallback: legacy generic-Gemini transcription.
+    Downstream stages see a single `raw/full_transcript` either way.
+    """
+    from app.worker.transcribe_35 import (
+        is_transcript_complete,
+        transcribe_with_gemini_35,
+    )
+    from app.worker.visual_analysis import get_video_duration
+
+    try:
+        duration = await get_video_duration(file_path)
+    except Exception:
+        duration = 0.0
+    try:
+        pool, _, _ = _gemini_key_pool()
+        text = await transcribe_with_gemini_35(
+            file_path, pool, tmp_dir=os.path.dirname(file_path) or "/tmp"
+        )
+        if is_transcript_complete(text, duration):
+            logger.info(f"3.5 Transcribe primary succeeded ({len(text)} chars).")
+            return text
+        logger.warning(
+            f"3.5 Transcribe output suspiciously short ({len(text)} chars, "
+            f"{duration:.0f}s audio): falling back to legacy transcription."
+        )
+    except Exception as e:
+        logger.warning(f"3.5 Transcribe primary failed, falling back: {e}")
+    return await transcribe_with_legacy_gemini(file_path, max_rounds, base_delay, cap_delay)
 
 
 def _format_independent_analysis_layers(analysis: VideoAnalysis) -> str:
