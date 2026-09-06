@@ -13,7 +13,7 @@ import google.generativeai as genai
 import googleapiclient.http
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, LinkPreviewOptions
 from sqlalchemy import select
 
 from app.bot.analysis_view import analysis_keyboard
@@ -663,15 +663,14 @@ async def downscale_video(input_path: str) -> str:
 
 
 def _gemini_key_pool() -> tuple[list[str], str | None, str | None]:
-    """Shared rotation pool: free-tier keys first, paid key last fallback."""
+    """Canonical rotation: main, numbered keys in order, paid fallback last."""
     main_key = getattr(settings, "gemini_api_key", None)
     if main_key:
         main_key = main_key.strip()
     paid_key = os.getenv("GEMINI_PAID_KEY")
     if paid_key:
         paid_key = paid_key.strip()
-    # pool: FREE-TIER FIRST (main + key_1..N), paid LAST as fallback when all
-    # free-tier keys are rate-limited/exhausted (cheaper at current volume).
+    # Keep this order aligned with factcheck.get_gemini_keys().
     pool = []
     if main_key:
         pool.append(main_key)
@@ -1645,6 +1644,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 chat_id=user_id,
                 text=user_delivery_text,
                 reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
             delivery_status["user"] = "SUCCEEDED" if delivery_mode == "TELEGRAM_LONG" else "SUCCEEDED_FALLBACK"
             if content_package:

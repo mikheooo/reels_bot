@@ -68,9 +68,8 @@ Multilingual detection, output and claim-evidence rules are documented in
 ## Limitations / notes
 
 - `.env` holds real keys and is git-ignored; `.env.example` documents the
-  required variables. Multi-key rotation (`GEMINI_API_KEY_1..N`) is supported
-  for free-tier quota spreading; an optional paid key can be set via
-  `GEMINI_PAID_KEY`.
+  required variables. Rotation order is `GEMINI_API_KEY`, then
+  `GEMINI_API_KEY_1..9`, then optional final fallback `GEMINI_PAID_KEY`.
 - Requires Docker or locally running Redis + PostgreSQL.
 - Designed for personal single-user operation (admin user id comes from
   environment/configuration, not hard-coded).

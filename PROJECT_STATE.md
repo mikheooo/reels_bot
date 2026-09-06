@@ -1,23 +1,24 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 03:10 ICT
+Snapshot: 2026-09-07 04:20 ICT
 
-Stage: **Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE (Observation / Shadow Calibration Mode)**
+Stage: **Telegram Analysis UX Cleanup v1 — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
-- Release commit: `7bb6239` — feat(outcome): implement outcome learning dataset and shadow calibration v1.
-- Previous accepted baseline: `77264f6d6f60218daa39528f7a7663f52e307e47` (documentation HEAD `99a112d44aab057534c8b3c7b0e79a2fc6b06d68`).
-- Documentation baseline: `ebc657a3a0efd64a8ee0b779b4151dcad99b5d5e` (docs: record Outcome Learning Dataset & Prioritization Calibration v1 stage completion).
+- Production release SHA: `75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
+- Telegram UX feature commit: `6f39e99f5ea5e8d84fadf2acd3356d432a4b9141` — feat(telegram): simplify analysis presentation.
+- Telegram UX follow-up commit: `75780f49fc41052f78c7c525a2fc90fb1e7f02f7` — fix(telegram): preserve meaning without business check.
+- Key rotation commit: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836` — fix(gemini): unify key rotation priority.
+- UX feature commit: `05fad1e4adc7156d674528c569a88376abc2e304` — feat(telegram): explain risk in user-friendly language.
+- Release tooling fix: `02d8c3e77e4122abe897792d056e76ed467bd9b8` — fix(release): pass Docker label template on PowerShell.
+- Previous production baseline: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836` (documentation HEAD `3004fe321a64594b559d3cd11fc10310602bf932`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Hosted CI verification:
-  - Runtime commit `7bb62396d962551b1cb3cc78d60331d23f00c5b6`: CI run `34062711864` -> **SUCCESS** (45s, 371 passed, 1 skipped, 7 deselected, 0 failed, 379 collected).
-- Production image tag: `reels_bot:7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
-- Running image digest: `sha256:8115853f1e7ec473954943a9c56f0bbddd7009e102f3684b1986d0524267bbd1`.
-- Image build timestamp: `2026-09-06T20:04:44Z`.
-- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
+- Production image tag: `reels_bot:75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
+- Running image digest: `sha256:b14cb36d3a027b53ba7b66f2f0a9a305013a4b8e4f23d092e5d83f89c5324675`.
+- Image build timestamp: `2026-09-06T21:15:14Z`.
+- Runtime provenance: OCI revision label, bot runtime identity, and worker runtime identity all match `75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
 
 ## Runtime
 
@@ -26,10 +27,41 @@ Stage: **Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE (
 - Redis 7, Telegram bot, and ARQ worker are running.
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video`, `cron:reap_stale_jobs`, and `cron:cron_audit_v2_jobs`.
-- Post-canary database: `4faf33f3-7f73-4f4b-a3f6-15fe3dfe47b0` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`643bb64f-cdb1-4eb5-9b76-65efc6695e28`, `PARTIALLY_DELIVERED`).
+- Post-canary database: `dcec0b41-dd28-404d-b818-adf78b025c77` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`8fd21975-836a-42e3-a4aa-263f1f1bc7a7`, `PARTIALLY_DELIVERED`).
 - Outcome learning tables: `outcome_observations` and `calibration_runs` initialized with schema indexes and unique constraints (`uq_outcome_observations_pub_horizon`).
 - Shadow mode verified: zero threshold mutations, zero prompt changes, `applied_recommendation_count = 0`.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
+
+## Gemini Key Rotation Priority Consistency Patch
+
+- Fact-check/analysis and transcription now use the same deterministic order: `GEMINI_API_KEY`, `GEMINI_API_KEY_1..9`, then `GEMINI_PAID_KEY` as the final fallback.
+- Duplicate key values are removed while preserving the first configured position.
+- The previous fact-check behavior that allowed `GEMINI_API_KEY_1` to shadow `GEMINI_API_KEY` is removed.
+- `.env.example` and `README.md` now document the actual runtime order.
+- Production worker inspection returned identical configured slot order for both pools and `orders_match=True`; no key values were printed or changed.
+
+## Telegram Analysis UX Cleanup v1
+
+- `TELEGRAM_LONG` now follows the user-facing order: short title, concise conclusion, risk, human reasons, action, factual check, business model/meaning, and next step.
+- Titles are derived deterministically from existing canonical content, limited to 12 complete words, omit `Разбор:`, and require no additional LLM call.
+- Primary Telegram output hides Router labels, intent enums, confidence percentages, priority bands/scores, language codes, and other pipeline metadata while retaining all raw values in canonical content, package persistence, and debug data.
+- Business category enums are translated through a deterministic presentation map. If the business check is not run by the unchanged policy, the renderer shows the existing canonical meaning rather than inventing a business classification.
+- MEDIUM/HIGH risk uses the non-accusatory disclaimer: `Это не означает, что ролик — обман. Это признаки того, что к его обещаниям стоит относиться критически.`
+- Fact UX distinguishes confirmed, disputed, and independently unconfirmed claims. Confirmed sources are inline and not duplicated as raw URLs.
+- Telegram link previews are disabled for initial delivery, cached repeat delivery, and regenerated package delivery.
+- Harsh skip wording is removed from the next-step presentation; existing canonical recommendations remain unchanged in persistence.
+- Content Router, Priority policy and thresholds, Fact Check policy, risk thresholds, Outcome Learning, Audit, contracts, and persistence schemas are unchanged.
+
+## Telegram Human-Friendly Risk Explanation UX Patch
+
+- `TELEGRAM_LONG` remains the single production renderer used for Telegram user delivery.
+- Canonical risk enums, Router taxonomy, confidence scores, thresholds, fact-check policy, safety floors, persistence schema, and output variant contracts are unchanged.
+- User-facing risk levels are localized deterministically: `LOW` -> `Низкий`, `MEDIUM` -> `Средний`, `HIGH` -> `Высокий`; `CRITICAL` -> `Критический` is presentation-ready without widening the current Router enum.
+- All 14 production content labels and all 8 production intent labels have centralized Russian explanations.
+- Deterministic action guidance is defined for LOW, MEDIUM, HIGH, and forward-compatible CRITICAL.
+- Primary `TELEGRAM_LONG` hides classifier confidence percentages and technical label names; canonical/persisted `risk_reasons` retain the raw label and score strings.
+- MEDIUM/HIGH explanations explicitly state that the detected patterns are not a probability of fraud.
+- Unknown future labels render a safe generic explanation instead of failing.
 
 ## Outcome Learning Dataset & Prioritization Calibration v1 Architecture
 
@@ -73,12 +105,10 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 ## Automated test coverage
 
 - Canonical Clean Git Archive / Hosted CI pytest run:
-  - `379 collected`
-  - `371 passed` (hosted clean checkout without local gitignored media fixture) / `372 passed` (clean archive with local media fixture)
-  - `1 skipped` (media test honestly skipped in clean checkout where gitignored test video is absent)
+  - `391 collected`
+  - `384 passed`
   - `7 deselected`
   - `0 failed`
-  - Canonical invariant: `371 passed + 1 skipped + 7 deselected = 379 collected` (hosted CI); `372 passed + 0 skipped + 7 deselected = 379 collected` (local clean archive).
 - Replay evaluation suites (all 8 passing at 1.0, 131 tests passed):
   - **Outcome Learning Replay**: **14 deterministic scenarios** (`tests/fixtures/outcome_learning_eval.json`); zero cross-horizon pooling: `0`, zero fake zero denominators: `0`, data sufficiency enforced: `True`, outlier isolation: `True`, zero automatic policy mutations: `0`, immutable safety floor preserved: `True`, lineage integrity: `True`, all 7 gates passed: `True`.
   - **Audit Replay**: **13 deterministic scenarios** (`tests/fixtures/audit_eval.json`); `auth_mistaken_for_deletion`: `0`, `duplicate_snapshots`: `0`, `unsupported_fake_verification`: `0`, `overdue_pollution_for_unavailable_connectors`: `0`, all gates passed: `True`.
@@ -91,28 +121,25 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 
 ## Verified live production canary
 
-- Deployment: 2026-09-07 03:05 ICT from clean release SHA `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
-- Canary job: `4faf33f3-7f73-4f4b-a3f6-15fe3dfe47b0`.
+- Deployment: 2026-09-07 04:15 ICT from clean release SHA `75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
+- Canary job: `dcec0b41-dd28-404d-b818-adf78b025c77`.
 - Reel URL: `https://www.instagram.com/reel/Dc1oN9IuLys/` (user `392046103`).
 - Video validation: 720x1280 MP4, 12 keyframes visual evidence.
-- Transcription: `OK` via `gemini-3.5-transcribe` (2530 chars), no fallback.
-- Language: Russian (`ru`), confidence `0.9908`, mixed `false`, translation not required.
-- Router: `HOW_TO`, risk `MEDIUM`.
-- Priority: `overall_score=0.532`, decision `AMBIGUOUS_CONTINUE` (publish threshold 0.6 intact).
+- Transcription: `OK`; upstream Gemini retries recovered from transient `429`/`503` responses.
+- Language: Russian (`ru`), translation not required.
+- Router: `BUSINESS_IDEA`, risk `MEDIUM`; intents `PROMISE_RESULT`, `TEACH`, `PERSUADE`, `RECOMMEND`.
+- Priority: `overall_score=0.5245`, decision `AMBIGUOUS_CONTINUE` (publish threshold 0.6 intact).
 - Output Variants: 5 rendered (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`), `all_valid=true`.
 - User Delivery: `SUCCEEDED` (`TELEGRAM_LONG`).
 - Channel Delivery: `SKIPPED_DUPLICATE` (dedup preserved).
-- Content Package Created: ID `643bb64f-cdb1-4eb5-9b76-65efc6695e28`, contract version `content_package_v1`.
+- Content Package Created: ID `8fd21975-836a-42e3-a4aa-263f1f1bc7a7`, contract version `content_package_v1`.
+- Delivered title contains 12 complete words; the message includes the new conclusion, risk, fact, business-model, and next-step sections.
+- Delivered output contains none of the banned internal labels/scores and only one inline source URL; link previews are disabled by the delivery call.
+- Persisted canonical data retains raw `LEAD_GENERATION`, `AMBIGUOUS`, priority `0.5245`, and risk reasons `PROMISE_RESULT (95%)`, `PERSUADE (90%)`, `TEACH (85%)`, `RECOMMEND (75%)`.
 - Outcome Learning & Shadow Calibration:
   - Database schema initialized: `outcome_observations` and `calibration_runs` tables verified.
   - Unique constraint `uq_outcome_observations_pub_horizon` enforced.
-  - Production OutcomeObservation count: `0` (truthful, unsimulated).
-  - Production CalibrationRun count: `0`.
-  - Calibration readiness in production: `INSUFFICIENT_DATA`.
   - Shadow Calibration mode confirmed: 0 automatic mutations to production thresholds (`publish=0.6`, `deprioritize=0.4`) or Router policies.
-  - Recommendations generated in production: `0` (shadow replay evaluation generated `2`).
-  - Recommendations applied: `0`.
-  - Automatic policy mutations: `0`.
   - Zero overdue audit records created (`AUDIT_TARGETS_COUNT = 0`).
   - Redis queue depth: `0`.
   - Legacy isolation: historical rows remain undisturbed.

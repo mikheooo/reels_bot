@@ -5,6 +5,8 @@ import json
 import pytest
 
 from app.worker.content_router import (
+    AuthorIntent,
+    ContentType,
     IntentScore,
     LabelScore,
     RouterDecision,
@@ -12,6 +14,7 @@ from app.worker.content_router import (
 )
 from app.worker.language import LanguageContext
 from app.worker.output_variants import (
+    HUMAN_LABEL_EXPLANATIONS,
     VARIANT_CONSTRAINTS,
     CanonicalContentResult,
     ClaimSummary,
@@ -19,6 +22,8 @@ from app.worker.output_variants import (
     OutputVariantType,
     build_canonical_content_result,
     generate_all_variants,
+    render_human_risk_explanation,
+    render_human_title,
     render_telegram_long,
     render_threads_post,
     render_tldr,
@@ -134,9 +139,10 @@ def test_telegram_long_generated_correctly():
     assert res.status == "RENDERED"
     assert res.validation_passed
     assert res.character_count <= VARIANT_CONSTRAINTS[OutputVariantType.TELEGRAM_LONG].max_length
-    assert "Разбор:" in res.text
-    assert "Что это такое?" in res.text
-    assert "Вердикт:" in res.text
+    assert "💡 **Быстрый старт бота**" in res.text
+    assert "Короткий вывод" in res.text
+    assert "Что здесь за смысл" in res.text
+    assert "Разбор:" not in res.text
 
 
 # Test 3: X respects character limit
@@ -255,7 +261,8 @@ def test_uncertain_fact_remains_uncertain():
     )
     assert len(canonical.uncertain_claims) == 1
     tg_long = render_telegram_long(canonical)
-    assert "Не подтверждено независимыми источниками" in tg_long.text
+    assert "Не удалось независимо подтвердить" in tg_long.text
+    assert "Опровергнуто" not in tg_long.text
 
 
 # Test 9: Disputed fact is not presented as certain
@@ -450,7 +457,7 @@ def test_telegram_user_delivery_bound_to_telegram_long():
     assert outcome == "SUCCEEDED"
     assert text == tl_variant.text
     assert text != legacy_analysis
-    assert "📋 **Разбор: Тестовый заголовок**" in text
+    assert "💡 **Тестовый заголовок**" in text
 
 
 def test_telegram_long_rendering_failure_has_correct_completion_semantics():
@@ -586,11 +593,317 @@ def test_legacy_telegram_behavior_not_bypassing_output_variant():
 
     assert mode == "TELEGRAM_LONG"
     assert delivery_text != legacy_raw
-    assert "📋 **Разбор: Уникальный Заголовок Регрессии**" in delivery_text
-    assert "🧠 **Что это такое?**" in delivery_text
-    assert "🎯 **Зачем это знать?**" in delivery_text
-    assert "⚖️ **Вердикт:**" in delivery_text
-    assert "Уровень риска:" in delivery_text
+    assert "💡 **Уникальный Заголовок Регрессии**" in delivery_text
+    assert "⚖️ **Короткий вывод**" in delivery_text
+    assert "Что это такое?" not in delivery_text
+    assert "Зачем это знать?" not in delivery_text
+    assert "Вердикт:" not in delivery_text
+    assert "Риск: низкий" in delivery_text
+
+
+@pytest.mark.parametrize(
+    ("risk_level", "localized"),
+    [
+        ("MEDIUM", "Средний"),
+        ("HIGH", "Высокий"),
+        ("CRITICAL", "Критический"),
+    ],
+)
+def test_human_risk_level_localization(risk_level, localized):
+    explanation = render_human_risk_explanation(risk_level, [])
+    assert explanation.localized_level == localized
+
+
+@pytest.mark.parametrize(
+    ("label", "human_text"),
+    [
+        ("PROMISE_RESULT", "Автор обещает конкретный результат."),
+        ("PERSUADE", "Автор активно пытается убедить или подтолкнуть к действию."),
+        ("RECOMMEND", "Автор даёт конкретную рекомендацию."),
+    ],
+)
+def test_risk_intent_label_has_human_explanation(label, human_text):
+    explanation = render_human_risk_explanation("MEDIUM", [label])
+    assert explanation.reasons == [human_text]
+
+
+def test_human_explanations_cover_complete_router_taxonomy():
+    production_labels = set(ContentType.__args__) | set(AuthorIntent.__args__)
+    assert production_labels <= HUMAN_LABEL_EXPLANATIONS.keys()
+
+
+def test_telegram_long_hides_confidence_but_preserves_structured_scores():
+    canonical = build_canonical_content_result(
+        route=RouterDecision(
+            primary_type="PRODUCT",
+            labels=[LabelScore(label="PRODUCT", confidence=0.92)],
+            intents=[
+                IntentScore(intent="PROMISE_RESULT", confidence=0.85),
+                IntentScore(intent="PERSUADE", confidence=0.80),
+                IntentScore(intent="RECOMMEND", confidence=0.75),
+            ],
+            risk="MEDIUM",
+            summary="Обещание результата.",
+        ),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+    )
+    raw_reasons = list(canonical.risk_reasons)
+
+    rendered = render_telegram_long(canonical)
+
+    assert rendered.status == "RENDERED"
+    assert "85%" not in rendered.text
+    assert "80%" not in rendered.text
+    assert "75%" not in rendered.text
+    assert "PROMISE_RESULT" not in rendered.text
+    assert "Автор обещает конкретный результат." in rendered.text
+    assert canonical.risk_reasons == raw_reasons
+    assert canonical.model_dump()["risk_reasons"] == [
+        "PROMISE_RESULT (85%)",
+        "PERSUADE (80%)",
+        "RECOMMEND (75%)",
+    ]
+
+
+def test_medium_and_high_risk_guidance_is_actionable_and_stronger():
+    medium = render_human_risk_explanation("MEDIUM", [])
+    high = render_human_risk_explanation("HIGH", [])
+
+    assert "Перепроверь ключевые обещания" in medium.guidance
+    assert "Не действуй сразу" in high.guidance
+    assert "деньгах, здоровье" in high.guidance
+
+
+def test_unknown_risk_label_does_not_break_renderer():
+    explanation = render_human_risk_explanation(
+        "MEDIUM", ["NEW_FUTURE_LABEL (67%)"]
+    )
+
+    assert explanation.localized_level == "Средний"
+    assert explanation.reasons == [
+        "Обнаружен дополнительный значимый признак содержания."
+    ]
+
+
+def test_telegram_long_cleanup_for_kwork_example_preserves_metadata():
+    source_url = "https://github.com/deepseek-ai/DeepSeek-R1/"
+    canonical = CanonicalContentResult(
+        title=(
+            "Видеоролик с бизнес-идеей заработка на фриланс-бирже Kwork: "
+            "использование DeepSe"
+        ),
+        topic="Business Idea",
+        summary=(
+            "Маркетинговый лид-магнит, создающий иллюзию лёгкого заработка "
+            "ради привлечения подписчиков."
+        ),
+        what_it_is=(
+            "Видеоролик с бизнес-идеей заработка на фриланс-бирже Kwork: "
+            "использование DeepSeek для генерации откликов заказчикам и запуск "
+            "рекламных кампаний в Яндекс Директ по готовым шаблонам."
+        ),
+        why_it_matters=(
+            "Настройка рекламы требует опыта, а ошибки могут привести к потере "
+            "рекламного бюджета клиента."
+        ),
+        verified_claims=[
+            ClaimSummary(
+                statement="DeepSeek действительно доступен пользователям.",
+                status="подтверждено",
+                source_url=source_url,
+            )
+        ],
+        uncertain_claims=[
+            ClaimSummary(
+                statement="Схема подходит новичку без опыта.",
+                status="не проверено",
+            )
+        ],
+        actionable_steps=[
+            (
+                "Пропустить материал. При необходимости освоить Яндекс Директ "
+                "использовать официальную документацию на тестовом проекте."
+            )
+        ],
+        business_summary=(
+            "LEAD_GENERATION: Автор предлагает найти клиента на Kwork, "
+            "подготовить отклик с помощью ИИ и продать настройку Яндекс Директ."
+        ),
+        risk_level="MEDIUM",
+        risk_reasons=[
+            "PROMISE_RESULT (85%)",
+            "TEACH (80%)",
+            "PERSUADE (80%)",
+            "RECOMMEND (75%)",
+        ],
+        priority_tier="AMBIGUOUS",
+        priority_score=0.56,
+        source_language_code="ru",
+        citations=[source_url],
+    )
+
+    rendered = render_telegram_long(canonical)
+    text = rendered.text
+
+    assert rendered.status == "RENDERED"
+    assert render_human_title(canonical) == (
+        "Заработок на Kwork с DeepSeek для откликов и Яндекс Директ"
+    )
+    assert len(render_human_title(canonical).split()) <= 12
+    assert not render_human_title(canonical).endswith("DeepSe")
+    for internal_value in (
+        "LEAD_GENERATION",
+        "PROMISE_RESULT",
+        "PERSUADE",
+        "RECOMMEND",
+        "AMBIGUOUS",
+        "0.56",
+        "Язык: ru",
+        "85%",
+    ):
+        assert internal_value not in text
+    assert "Что здесь за бизнес-модель" in text
+    assert "Автор предлагает найти клиента на Kwork" in text
+    assert "Это не означает, что ролик — обман." in text
+    assert "Не удалось независимо подтвердить" in text
+    assert "Пропустить материал" not in text
+    assert "Если тема интересна, сначала освоить Яндекс Директ" in text
+    assert text.count(source_url) == 1
+    assert text.index("Короткий вывод") < text.index("Риск: средний")
+    assert text.index("Риск: средний") < text.index("Что удалось проверить")
+    assert text.index("Что удалось проверить") < text.index("Что здесь за бизнес-модель")
+    assert canonical.model_dump()["priority_tier"] == "AMBIGUOUS"
+    assert canonical.model_dump()["priority_score"] == 0.56
+    assert canonical.model_dump()["source_language_code"] == "ru"
+    assert canonical.model_dump()["risk_reasons"][0] == "PROMISE_RESULT (85%)"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            (
+                "Инструкция по подключению внешнего плагина или сервиса автоматизации "
+                "к ChatGPT через режим разработчика"
+            ),
+            "Подключение внешнего плагина или сервиса автоматизации к ChatGPT",
+        ),
+        (
+            (
+                "Видеоролик с демонстрацией создания анимированного видеоролика с "
+                "помощью Remotion, синтеза речи и инструкций для ИИ-агента"
+            ),
+            "Создание анимированного видеоролика с помощью Remotion",
+        ),
+        (
+            (
+                "Тир-лист и субъективная оценка популярных AI-сертификаций "
+                "(Google AI Essentials, GitHub Foundations, AWS AI Practitioner) "
+                "для карьеры"
+            ),
+            "Тир-лист и субъективная оценка популярных AI-сертификаций",
+        ),
+        (
+            (
+                "Видеоролик с демонстрацией якобы полученного дохода 675 заказов за "
+                "три месяца и инструкцией по созданию инфобизнеса"
+            ),
+            "Заявленный доход 675 заказов за три месяца",
+        ),
+    ],
+)
+def test_human_title_prefers_complete_phrase(source, expected):
+    canonical = CanonicalContentResult(
+        title=source,
+        topic="Software Tool",
+        summary="Краткий смысл.",
+        what_it_is=source,
+        why_it_matters="Практический контекст.",
+        risk_level="LOW",
+    )
+
+    title = render_human_title(canonical)
+
+    assert title == expected
+    assert len(title.split()) <= 12
+    assert title.split()[-1].casefold() not in {"и", "для", "через"}
+
+
+def test_low_risk_omits_intent_bullets_and_medium_omits_neutral_intents():
+    labels = ["INFORM (90%)", "ENTERTAIN (80%)", "RECOMMEND (75%)"]
+
+    low = render_human_risk_explanation("LOW", labels)
+    medium = render_human_risk_explanation("MEDIUM", labels)
+
+    assert low.reasons == []
+    assert medium.reasons == ["Автор даёт конкретную рекомендацию."]
+
+
+def test_canonical_claim_prefers_normalized_analysis_language_statement():
+    original = "Donkey Cut is a free CapCut alternative."
+    normalized = "Donkey Cut — бесплатная альтернатива CapCut."
+    analysis = VideoAnalysis(
+        claims=[
+            Claim(
+                statement=original,
+                analysis_statement=normalized,
+                claim_type="fact",
+                status="подтверждено",
+            )
+        ],
+        viable_idea=False,
+    )
+
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang("en"),
+        specialized=_dummy_specialized(),
+        analysis=analysis,
+    )
+
+    assert canonical.verified_claims[0].statement == normalized
+    assert analysis.claims[0].statement == original
+
+
+def test_educational_business_result_uses_meaning_heading_without_losing_enum():
+    canonical = CanonicalContentResult(
+        title="Открытый инструмент для видеомонтажа",
+        topic="Software Tool",
+        summary="Образовательный обзор инструмента.",
+        what_it_is="Обзор открытого инструмента для видеомонтажа.",
+        why_it_matters="Помогает оценить его возможности и ограничения.",
+        business_summary="EDUCATIONAL: Автор объясняет возможности инструмента.",
+        risk_level="LOW",
+    )
+
+    text = render_telegram_long(canonical).text
+
+    assert "Что здесь за смысл" in text
+    assert "Что здесь за бизнес-модель" not in text
+    assert "EDUCATIONAL" not in text
+    assert canonical.business_summary.startswith("EDUCATIONAL:")
+
+
+def test_next_step_removes_skip_suffix_but_keeps_useful_action():
+    canonical = CanonicalContentResult(
+        title="Автоматизация YouTube",
+        topic="Software Tool",
+        summary="Обзор инструмента.",
+        what_it_is="Открытый инструмент для автоматизации YouTube.",
+        why_it_matters="Требует оценки API-расходов.",
+        actionable_steps=[
+            "Изучить репозиторий и рассчитать расходы на API; иначе пропустить."
+        ],
+        risk_level="LOW",
+    )
+
+    text = render_telegram_long(canonical).text
+
+    assert "Изучить репозиторий и рассчитать расходы на API" in text
+    assert "пропустить" not in text.casefold()
 
 
 def test_build_canonical_content_result_accepts_video_url():
@@ -623,5 +936,3 @@ def test_output_variants_evaluation_replay():
     assert report.language_policy_accuracy == 1.0
     assert report.platform_limit_violations == 0
     assert report.risk_warning_violations == 0
-
-

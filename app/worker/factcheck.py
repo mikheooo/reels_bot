@@ -29,21 +29,22 @@ OFFICIAL_DOMAINS = ["google.com", "support.google.com", "developers.google.com",
 
 # --- NEW GEMINI ROTATION LOGIC ---
 def get_gemini_keys():
-    # Free-tier keys FIRST (main + key_1..N); paid key only as fallback when
-    # all free-tier keys are rate-limited/exhausted (cheaper at current volume).
+    # One canonical order shared with transcription: main first, numbered keys
+    # next, and the paid key as the final fallback. Duplicate values are ignored.
+    main = getattr(settings, "gemini_api_key", None) or os.getenv("GEMINI_API_KEY")
     paid = os.getenv("GEMINI_PAID_KEY")
-    free1 = os.getenv("GEMINI_API_KEY_1") or os.getenv("GEMINI_API_KEY") or getattr(settings, "gemini_api_key", None)
-    keys = [
-        free1,
-        os.getenv("GEMINI_API_KEY_2"),
-        os.getenv("GEMINI_API_KEY_3"),
-        os.getenv("GEMINI_API_KEY_4"),
-    ]
-    keys = [k.strip() for k in keys if k and k.strip()]
+    candidates = [main]
+    candidates.extend(os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 10))
+    keys: list[str] = []
+    for candidate in candidates:
+        if candidate:
+            candidate = candidate.strip()
+            if candidate and candidate not in keys:
+                keys.append(candidate)
     if paid:
         paid = paid.strip()
-        if paid not in keys:
-            keys.append(paid)   # fallback LAST
+        if paid and paid not in keys:
+            keys.append(paid)
     return keys
 
 _key_index = 0
