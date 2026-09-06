@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     exa_api_key: str | None = None
     jina_api_key: str | None = None
     publish_threshold: float = 0.6
+    # Was hardcoded as "gemini-3.7-flash" in tasks.py and factcheck.py.
+    # Override via GEMINI_MODEL in .env to switch models without touching code.
+    gemini_model: str = "gemini-3.7-flash"
 
     class Config:
         env_file = ".env"

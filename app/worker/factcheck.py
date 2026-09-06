@@ -50,8 +50,8 @@ def get_next_gemini_key():
     _key_index = (_key_index + 1) % len(keys)
     return key
 
-# Set the active model here
-TARGET_MODEL = "gemini-3.7-flash"
+# Set the active model here — overridable via GEMINI_MODEL in .env.
+TARGET_MODEL = settings.gemini_model
 
 async def post_vertex_with_retry(url: str, headers: dict, payload: dict, client_timeout: float, deadline: float) -> dict:
     """General-purpose HTTP client for Vertex AI with Full Jitter and Retry-After support."""
