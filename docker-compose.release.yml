@@ -7,7 +7,3 @@ services:
         BUILD_DATE: ${RELEASE_BUILD_DATE:?Use scripts/release.ps1 for production builds}
   worker:
     image: reels_bot:${RELEASE_GIT_SHA:?Use scripts/release.ps1 for production builds}
-    build:
-      args:
-        VCS_REF: ${RELEASE_GIT_SHA:?Use scripts/release.ps1 for production builds}
-        BUILD_DATE: ${RELEASE_BUILD_DATE:?Use scripts/release.ps1 for production builds}

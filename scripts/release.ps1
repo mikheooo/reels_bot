@@ -19,7 +19,7 @@ try {
     $env:RELEASE_GIT_SHA = $sha
     $env:RELEASE_BUILD_DATE = $buildDate
 
-    docker compose -f docker-compose.yml -f docker-compose.release.yml build bot worker
+    docker compose -f docker-compose.yml -f docker-compose.release.yml build bot
     if ($LASTEXITCODE -ne 0) { throw "Release image build failed." }
 
     $label = docker image inspect "reels_bot:$sha" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'

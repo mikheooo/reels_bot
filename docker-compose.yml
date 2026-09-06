@@ -42,11 +42,6 @@ services:
     restart: unless-stopped
   worker:
     image: reels_bot:${RELEASE_GIT_SHA:-dev}
-    build:
-      context: .
-      args:
-        VCS_REF: ${RELEASE_GIT_SHA:-dev}
-        BUILD_DATE: ${RELEASE_BUILD_DATE:-unknown}
     command: arq app.worker.settings.WorkerSettings
     env_file: .env
     environment:
