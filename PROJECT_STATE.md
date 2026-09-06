@@ -1,23 +1,23 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 02:35 ICT
+Snapshot: 2026-09-07 02:50 ICT
 
-Stage: **Post-Publish Audit & Telemetry v2 — COMPLETE**
+Stage: **Post-Publish Audit & Telemetry v2 — COMPLETE (Blockers Closed)**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `26abd21f053d59e47798b55b979ab088a0902176`.
-- Documentation-only current HEAD: documentation-only handoff commit following release `26abd21f053d59e47798b55b979ab088a0902176`.
-- Release commit: `26abd21` — feat(audit): implement post-publish audit and telemetry v2.
-- Previous accepted baseline: `29fefbcfe06ec49024758cd5d196ac0a6056fc99` (documentation HEAD `753b25ee3dc2db4c02f15b77b9d8b966a4c56347`).
+- Production release SHA: `77264f6d6f60218daa39528f7a7663f52e307e47`.
+- Documentation-only current HEAD: documentation-only handoff commit following release `77264f6d6f60218daa39528f7a7663f52e307e47`.
+- Release commit: `77264f6` — feat(audit): enforce scheduled occurrence idempotency and observational edit telemetry.
+- Previous accepted baseline: `26abd21f053d59e47798b55b979ab088a0902176` (documentation HEAD `08502d24d4693eebbde9cccbe913d6446810b94c`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
 - Hosted CI verification:
-  - Runtime commit `26abd21f053d59e47798b55b979ab088a0902176`: CI run `34054965964` -> **SUCCESS** (43s).
-- Production image tag: `reels_bot:26abd21f053d59e47798b55b979ab088a0902176`.
-- Running image digest: `sha256:d45b83436e474f5923b4d19f3e4a8c1fbe9fb257dc8dc29604ac7827ed24dde1`.
-- Image build timestamp: `2026-09-06T19:28:46Z`.
-- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `26abd21f053d59e47798b55b979ab088a0902176`.
+  - Runtime commit `77264f6d6f60218daa39528f7a7663f52e307e47`: CI run `34055888824` -> **SUCCESS** (51s).
+- Production image tag: `reels_bot:77264f6d6f60218daa39528f7a7663f52e307e47`.
+- Running image digest: `sha256:3f117b196b745ca83702b70f544995e0742b83bbc4ba41b819bd780fcf788209`.
+- Image build timestamp: `2026-09-06T19:46:49Z`.
+- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `77264f6d6f60218daa39528f7a7663f52e307e47`.
 
 ## Runtime
 
@@ -27,49 +27,55 @@ Stage: **Post-Publish Audit & Telemetry v2 — COMPLETE**
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video`, `cron:reap_stale_jobs`, and `cron:cron_audit_v2_jobs`.
 - Post-canary database: `d8e70570-daa6-47eb-933d-b0ed79b243ab` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`deebe693-109d-426f-bc8c-50388bda108b`, `DELIVERED`), 3 `PublicationIntentModel` rows (`SUPPORTED_NOT_CONFIGURED` for X and Threads, `MANUAL_EXPORT_READY` for YouTube Community).
-- Post-publish audit tables: `audit_targets` and `audit_snapshots` initialized with schema indexes. 0 false/overdue audit records created during canary.
+- Post-publish audit tables: `audit_targets`, `audit_snapshots`, and `audit_events` initialized with schema indexes. 0 false/overdue audit records created during canary.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
 
 ## Post-Publish Audit & Telemetry v2 Architecture
 
-This stage implemented a production-grade post-publish audit and telemetry system:
+This stage implemented a production-grade post-publish audit and telemetry system with strict idempotency and observational telemetry:
 
 1. **Provider Lookup & Telemetry Contracts**:
    - **X API v2**: `GET https://api.x.com/2/tweets/:id?tweet.fields=text,public_metrics`. Normalizes `impression_count`, `like_count`, `reply_count`, `retweet_count`, `quote_count`, `bookmark_count`.
-   - **Meta Threads Graph API**: `GET https://graph.threads.net/v1.0/:id?fields=id,text,permalink` and official Meta Insights endpoint `GET https://graph.threads.net/v1.0/:id/insights?metric=views,likes,replies,reposts,quotes`.
+   - **Meta Threads Graph API**: `GET https://graph.threads.net/v1.0/:id?fields=id,text,permalink` and official Meta Insights endpoint `GET https://graph.threads.net/v1.0/:id/insights?metric=views,likes,replies,reposts,quotes`. Missing optional metrics safely remain `None` without crashing or injecting fake `0` baselines.
    - **YouTube Community**: Truthfully marked `NOT_APPLICABLE_MANUAL_EXPORT` with `next_audit_at = None`.
-   - **Telegram Channels / Users**: Truthfully marked `DELETION_VERIFICATION_UNSUPPORTED` with `next_audit_at = None`.
+   - **Telegram Channels / Users**: Truthfully marked `DELETION_VERIFICATION_UNSUPPORTED` with `next_audit_at = None`. Bot-visible channel edits recorded via observational telemetry (`edited_channel_post` -> `AuditEventModel`, `EDIT_OBSERVED`) without fabricating deletion verification.
 
 2. **Core Safety Gates Enforced**:
    - **Gate 1: `auth_mistaken_for_deletion == 0`**: HTTP 401/403 (unauthorized/token revoked) is explicitly categorized as `AUTH_REQUIRED` and NEVER as `DELETED`.
-   - **Gate 2: `duplicate_snapshots == 0`**: Occurrence key idempotency (`f"{target.audit_id}:{int(checked_at.timestamp())}"`) guarantees at most one snapshot per check window.
+   - **Gate 2: `duplicate_snapshots == 0`**: Scheduled occurrence key idempotency (`occurrence_key = f"{target.audit_id}:{scheduled_for_iso}"`) guarantees at most one snapshot per scheduled occurrence, regardless of execution jitter, retries, or double scheduler firings.
    - **Gate 3: `unsupported_fake_verification == 0`**: Telegram and YouTube Community are never reported as externally verified or checked for deletion.
    - **Gate 4: `overdue_pollution_for_unavailable_connectors == 0`**: Unconfigured or manual-only targets evaluate to `NOT_APPLICABLE_*` with `next_audit_at = None`.
 
-3. **Cadence & Scheduler**:
+3. **Scheduled Occurrence vs Execution Time**:
+   - $\text{scheduled occurrence} \neq \text{checked\_at}$
+   - Identity derives strictly from logical scheduled occurrence `scheduled_for`, not actual clock time `checked_at`.
+   - Strong idempotency regressions verified: retry at different times (10:00:01 vs 10:00:18 -> 1 snapshot), double scheduler firing -> 1 persistent snapshot, crash/retry boundary -> 0 duplicate snapshots.
+
+4. **Cadence & Scheduler**:
    - Multi-phase decaying schedule: 15 min, 2 h, 12 h, 24 h (1 day), 72 h (3 days), 7 days.
    - Terminal cadence handling (`next_audit_at = None`).
    - Transient backoff for HTTP 429 (`Retry-After` header parsing).
    - Cron worker integration via ARQ (`cron_audit_v2_jobs` running every 15 min at `:05, :20, :35, :50`).
    - Concurrency locking via `FOR UPDATE SKIP LOCKED`.
 
-4. **Technical Content Integrity & Safe Delta Computation**:
+5. **Technical Content Integrity & Safe Delta Computation**:
    - Technical whitespace/newline normalization for lossless SHA-256 hash comparison.
    - Actionable alerts for `DELETED_OR_NOT_FOUND`, `MODIFIED`, and `AUTH_REQUIRED`.
    - Safe zero baseline metric delta computation (prev=0 -> pct=None).
 
-5. **Legacy Audit Isolation**:
+6. **Legacy Audit Isolation**:
    - Historical records in `jobs` table (16 `DEFERRED_LEGACY`, 12 `DEFERRED`, 67 `NOT_SCHEDULED`) remain completely untouched and isolated.
    - V2 audit engine exclusively queries `audit_targets`.
 
 ## Automated test coverage
 
-- Canonical pytest run:
-  - `347 collected`
-  - `340 passed`
+- Canonical Clean Git Archive / Hosted CI pytest run:
+  - `352 collected`
+  - `344 passed`
+  - `1 skipped` (media test skipped honestly in clean archive where gitignored test video is absent)
   - `7 deselected`
   - `0 failed`
-- Replay evaluation suites (all 7 passing at 1.0):
+- Replay evaluation suites (all 7 passing at 1.0, 110 tests passed):
   - **Audit Replay**: **13 deterministic scenarios** (`tests/fixtures/audit_eval.json`); `auth_mistaken_for_deletion`: `0`, `duplicate_snapshots`: `0`, `unsupported_fake_verification`: `0`, `overdue_pollution_for_unavailable_connectors`: `0`, all gates passed: `True`.
   - **Connector Replay**: **13 deterministic scenarios** (`tests/fixtures/connector_eval.json`); unauthorized publications: `0`, duplicate logical publications: `0`, stale approvals published: `0`, fake successes: `0`, retry correctness: `1.0`, all gates passed: `True`.
   - **Distribution Replay**: **10 scenarios across 10 evaluations** (`tests/fixtures/distribution_eval.json`); lifecycle correctness: `1.0`, approval enforcement: `1.0`, target status accuracy: `1.0`, unauthorized approval violations: `0`, duplicate publication violations: `0`, factual mutation violations: `0`, risk warning violations: `0`, idempotency violations: `0`, all gates passed: `True`.
@@ -80,7 +86,7 @@ This stage implemented a production-grade post-publish audit and telemetry syste
 
 ## Verified live production canary
 
-- Deployment: 2026-09-07 02:29 ICT from clean release SHA `26abd21f053d59e47798b55b979ab088a0902176`.
+- Deployment: 2026-09-07 02:47 ICT from clean release SHA `77264f6d6f60218daa39528f7a7663f52e307e47`.
 - Canary job: `d8e70570-daa6-47eb-933d-b0ed79b243ab`.
 - Reel URL: `https://www.instagram.com/reel/Dc1oN9IuLys/` (user `392046103`).
 - Video validation: 720x1280 MP4, 12 keyframes visual evidence.

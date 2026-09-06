@@ -8,8 +8,10 @@ The pipeline enforces five core architectural principles:
 1. **Accurate Provider Status Semantics**: Absolute distinction between HTTP 404 (post absent/deleted), HTTP 401/403 (authentication expired/revoked), and HTTP 429 (rate limited). Authentication failures are NEVER mistaken for content deletion.
 2. **Zero Overdue Schedule Pollution**: Connectors in `SUPPORTED_NOT_CONFIGURED` or `UNSUPPORTED_OFFICIAL_API` evaluate immediately to non-scheduled terminal statuses (`NOT_APPLICABLE_NOT_CONFIGURED`, `NOT_APPLICABLE_MANUAL_EXPORT`) with `next_audit_at = None`, preventing spurious overdue backlog accumulation.
 3. **Strict Legacy Isolation**: Pre-existing historical audit records (`DEFERRED_LEGACY`, `DEFERRED`) in the `jobs` table are strictly isolated. V2 audit operates entirely through dedicated `audit_targets` and `audit_snapshots` tables and never awakens legacy rows.
-4. **Stable Idempotency & Occurrence Keys**: Immutable snapshot persistence keyed by deterministic `occurrence_key` strings (`target_id:timestamp`), preventing duplicate audit snapshots during worker retries.
-5. **Technical Content Integrity**: Exact SHA-256 hash comparison between approved payloads and platform-returned text using lossless whitespace/newline normalization.
+4. **Stable Idempotency & Scheduled Occurrence Identity**: Occurrence identity is strictly determined by the logical scheduled occurrence (`scheduled_for`), **NOT** by the physical execution timestamp (`checked_at`). Schema: `occurrence_key = f"{target.audit_id}:{scheduled_for_iso}"`. Jitter, worker retries, and duplicate scheduler firings at different execution seconds (e.g. 10:00:01 vs 10:00:18) resolve to the identical occurrence key and snapshot ID. Duplicate database inserts are safely absorbed as idempotent no-ops.
+5. **Observational Telegram Edit Telemetry**: Telegram Bot API does not support arbitrary post lookup or deletion verification. Truthful observational telemetry captures inbound `edited_channel_post` updates (`AuditEventModel`, `EDIT_OBSERVED`) without fabricating deletion verification.
+6. **Optional Metric Safety**: Provider responses omitting optional metrics (e.g. Threads insights without quotes or views) preserve `None` values rather than substituting fake zero baselines or crashing the audit.
+7. **Technical Content Integrity**: Exact SHA-256 hash comparison between approved payloads and platform-returned text using lossless whitespace/newline normalization.
 
 ---
 
@@ -36,6 +38,7 @@ The pipeline enforces five core architectural principles:
 | **Normalized Metrics Mapping** | `views` ← `views`, `likes` ← `likes`, `replies` ← `replies`, `reposts` ← `reposts`, `quotes` ← `quotes` |
 | **Status Handling** | HTTP 200: `VERIFIED` or `MODIFIED`; HTTP 404: `DELETED_OR_NOT_FOUND`; HTTP 401/403: `AUTH_REQUIRED`; HTTP 429: `TEMPORARILY_UNAVAILABLE` |
 | **Rate Limit Headers** | `Retry-After`, `x-business-use-case-usage` |
+| **Optional Metric Safety** | Absent metrics in provider response remain `None`; never defaulted to fake `0` |
 
 ### 3. YouTube Community Posts
 
@@ -52,6 +55,7 @@ The pipeline enforces five core architectural principles:
 | **Official Lookup API** | Telegram Bot API does not provide an endpoint to look up arbitrary past messages or verify deletion status. |
 | **Truthful Status** | `DELETION_VERIFICATION_UNSUPPORTED` |
 | **Schedule Semantics** | `eligible = False`, `next_audit_at = None`. Zero fake verification checks. |
+| **Observational Telemetry** | Bot captures `edited_channel_post` events as observational `EDIT_OBSERVED` records in `audit_events`. Never claims deletion verification. |
 
 ---
 
@@ -101,6 +105,7 @@ CREATE TABLE IF NOT EXISTS audit_snapshots (
     id VARCHAR(64) PRIMARY KEY,
     audit_id VARCHAR(64) NOT NULL REFERENCES audit_targets(id) ON DELETE CASCADE,
     occurrence_key VARCHAR(128) NOT NULL,
+    scheduled_for TIMESTAMP WITHOUT TIME ZONE,
     checked_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
     object_exists BOOLEAN NOT NULL,
     content_hash VARCHAR(64),
@@ -119,6 +124,30 @@ ON audit_snapshots (occurrence_key);
 
 CREATE INDEX IF NOT EXISTS ix_audit_snapshots_audit_id
 ON audit_snapshots (audit_id);
+
+CREATE INDEX IF NOT EXISTS ix_audit_snapshots_audit_scheduled
+ON audit_snapshots (audit_id, scheduled_for);
+```
+
+### 3. `audit_events` Table
+
+Stores inbound observational event telemetry, including Telegram message edit notifications.
+
+```sql
+CREATE TABLE IF NOT EXISTS audit_events (
+    id VARCHAR(64) PRIMARY KEY,
+    event_type VARCHAR(64) NOT NULL DEFAULT 'EDIT_OBSERVED',
+    channel_id VARCHAR(64) NOT NULL,
+    message_id BIGINT NOT NULL,
+    observed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    previous_hash VARCHAR(64),
+    new_hash VARCHAR(64) NOT NULL,
+    payload_text TEXT,
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_audit_events_channel_msg
+ON audit_events (channel_id, message_id);
 ```
 
 ---
@@ -136,11 +165,27 @@ The default `AuditPolicy` defines a declarative, non-linear decaying schedule co
 - **Tier 5**: 7 days (`604800s`)
 - **Tier 6+**: Terminal state reached; `next_audit_at = None`.
 
-### Execution Worker & Concurrency
+### Scheduled Occurrence vs Execution Time
 
-- **Worker cron task**: `cron_audit_v2_jobs` registered in `WorkerSettings.cron_jobs` running every 15 minutes (`minute={5, 20, 35, 50}`).
-- **Concurrency control**: PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED` prevents double-auditing across distributed worker nodes.
-- **Occurrence key idempotency**: `occurrence_key = f"{target.audit_id}:{int(checked_at.timestamp())}"` ensures duplicate triggers do not insert duplicate database snapshots.
+A critical architectural invariant separates logical occurrence identity from execution timing:
+
+$$\text{scheduled occurrence} \neq \text{checked\_at}$$
+
+- **`scheduled_for`**: The logical boundary timestamp when the audit was scheduled to occur (e.g. `2026-09-07T10:00:00Z`).
+- **`checked_at`**: The physical wall-clock timestamp when the provider HTTP request completed (e.g. `2026-09-07T10:00:18Z`).
+- **Occurrence Key Contract**:
+  ```python
+  logical_scheduled = scheduled_for or target.next_audit_at or checked_at
+  scheduled_for_iso = logical_scheduled.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+  occurrence_key = f"{target.audit_id}:{scheduled_for_iso}"
+  ```
+
+### Idempotency Guarantees
+
+1. **Different-time retries**: Worker retry at `10:00:18` following an initial attempt at `10:00:01` shares the same `scheduled_for` (`10:00:00Z`), resolving to the exact same `occurrence_key` and snapshot ID (`test_23`).
+2. **Double scheduler firings**: Two concurrent or duplicate scheduler invocations for one due target produce exactly 1 persistent snapshot; subsequent insertions are absorbed as safe no-ops (`test_24`).
+3. **Crash/retry persistence boundaries**: Worker failure immediately around the persistence step safely fetches or skips existing records without duplicate generation (`test_25`).
+4. **Concurrency control**: PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED` prevents double-auditing across distributed worker nodes.
 
 ---
 
