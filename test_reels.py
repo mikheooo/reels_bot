@@ -1,22 +1,15 @@
 import asyncio
-import os
-import sys
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
-# Set working directory to reels_bot to allow relative imports
-os.chdir(os.path.abspath("C:/Users/Misha/reels_bot"))
-sys.path.insert(0, os.path.abspath("C:/Users/Misha/reels_bot"))
-
-from app.worker.tasks import get_raw_transcript
 from app.worker.factcheck import extract_claims, search_exa_for_claim, validate_claims
+from app.worker.tasks import get_raw_transcript
 
-@pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
 async def test_bot():
     url = "https://www.instagram.com/reel/DboTpPcMpX8/"
-    video_path = "C:/Users/Misha/reels_bot/test_vid.mp4"
+    video_path = "test_vid.mp4"
     
     print(f"Downloading {url} to {video_path}...")
     from app.worker.tasks import download_video

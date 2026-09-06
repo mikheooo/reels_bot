@@ -9,7 +9,7 @@ Two failures this file exists to prevent from coming back:
 
 import sqlite3
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -17,9 +17,12 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 
 from app.db.models import Job
 from app.worker import reaper
-from app.worker.reaper import expire_stale_processing, stale_processing_condition, stale_reason
+from app.worker.reaper import (
+    expire_stale_processing,
+    stale_processing_condition,
+    stale_reason,
+)
 from app.worker.tasks import format_error_text
-
 
 # --------------------------------------------------------------------------
 # format_error_text — nothing may ever land in ERROR without a cause
@@ -70,7 +73,7 @@ def _job(job_id, status, created_at, started_at=None):
 
 
 def test_predicate_expires_old_processing_and_keeps_the_rest():
-    now = datetime(2026, 9, 2, 12, 0, 0)
+    now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
     old = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S.%f")
     fresh = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S.%f")
 
@@ -88,7 +91,7 @@ def test_predicate_expires_old_processing_and_keeps_the_rest():
 
 def test_predicate_ignores_created_at_when_started_at_is_known():
     """A job queued for hours must not be killed the moment it starts."""
-    now = datetime(2026, 9, 2, 12, 0, 0)
+    now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
     created = (now - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S.%f")
     started = (now - timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S.%f")
 

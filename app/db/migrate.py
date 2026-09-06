@@ -34,6 +34,8 @@ async def apply_migrations(engine) -> None:
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS transcription_model VARCHAR;",
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS transcription_fallback_used VARCHAR;",
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS transcription_status VARCHAR;",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS delivery_status JSONB;",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS audit_state VARCHAR;",
             "CREATE INDEX IF NOT EXISTS ix_jobs_tg_channel_message_id ON jobs (tg_channel_message_id);",
             "CREATE INDEX IF NOT EXISTS ix_jobs_audit_scheduled_at ON jobs (audit_scheduled_at);",
             """
@@ -47,11 +49,22 @@ async def apply_migrations(engine) -> None:
             """
             DO $$
             BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'chk_jobs_status'
+                      AND pg_get_constraintdef(oid) NOT LIKE '%PARTIAL%'
+                ) THEN
+                    ALTER TABLE jobs DROP CONSTRAINT chk_jobs_status;
+                END IF;
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_jobs_status') THEN
-                    ALTER TABLE jobs ADD CONSTRAINT chk_jobs_status CHECK (status IN ('QUEUED', 'PROCESSING', 'DONE', 'ERROR', 'REVIEW_REQUIRED'));
+                    ALTER TABLE jobs ADD CONSTRAINT chk_jobs_status CHECK (status IN ('QUEUED', 'PROCESSING', 'DONE', 'PARTIAL', 'ERROR', 'REVIEW_REQUIRED'));
                 END IF;
             END $$;
-            """
+            """,
+            # Option B: preserve legacy due timestamps, but explicitly quarantine
+            # them so they no longer imply an active scheduler capability.
+            "UPDATE jobs SET audit_state = 'DEFERRED_LEGACY' WHERE audit_scheduled_at IS NOT NULL AND audit_state IS NULL;",
+            "UPDATE jobs SET audit_state = 'NOT_SCHEDULED' WHERE audit_scheduled_at IS NULL AND audit_state IS NULL;",
         ]
         for q in queries:
             await conn.execute(text(q))

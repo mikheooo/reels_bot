@@ -17,6 +17,11 @@ from app.db.models import Job, Task
 router = Router()
 logger = logging.getLogger(__name__)
 
+
+def existing_job_query(url_hash: str):
+    """Return the newest attempt regardless of status so ERROR retry is reachable."""
+    return select(Job).where(Job.url_hash == url_hash).order_by(Job.created_at.desc()).limit(1)
+
 STATUS_EMOJI = {
     'PENDING': '⏳',
     'IN_PROGRESS': '🔄',
@@ -223,12 +228,12 @@ async def handle_url(message: types.Message):
     cleaned_url, url_hash = clean_url(url)
     
     async with AsyncSessionLocal() as session:
-        stmt = select(Job).where(Job.url_hash == url_hash, Job.status.in_(['QUEUED', 'PROCESSING', 'DONE'])).limit(1)
+        stmt = existing_job_query(url_hash)
         result = await session.execute(stmt)
         existing_job = result.scalar_one_or_none()
         
         if existing_job:
-            if existing_job.status == 'DONE':
+            if existing_job.status in ('DONE', 'PARTIAL'):
                 await message.answer("🎬 Это видео уже анализировалось. Вот результат:")
                 await message.answer_video(existing_job.tg_file_id)
                 if existing_job.analysis_text:
@@ -248,17 +253,36 @@ async def handle_url(message: types.Message):
                         text = text[4096:].strip()
                 elif existing_job.full_transcript:
                     await message.answer("Нужен весь текст ролика?", reply_markup=transcript_button(existing_job.id))
+                if existing_job.status == 'PARTIAL':
+                    await message.answer("⚠️ Анализ завершён, но часть delivery-шагов требует проверки.")
                 return
             elif existing_job.status in ('QUEUED', 'PROCESSING'):
                 await message.answer("Это видео уже в очереди или обрабатывается. Я пришлю результат, как только он будет готов.")
                 return
-            else:
-                # Если статус ERROR или другой, пробуем заново
+            elif existing_job.status == 'ERROR':
+                # Explicit retry policy: reuse the failed job and clear only
+                # transient execution/delivery state.
                 existing_job.status = 'QUEUED'
+                existing_job.error_text = None
+                existing_job.started_at = None
+                existing_job.delivery_status = None
                 await session.commit()
                 redis_pool = await get_redis_pool()
                 await redis_pool.enqueue_job('process_video', existing_job.id, cleaned_url, message.from_user.id)
-                await message.answer("Повторная попытка обработки! Ждите результат.")
+                try:
+                    from app.worker.progress import stage_text
+                    status_msg = await message.answer(stage_text("QUEUED"))
+                    existing_job.tg_progress_chat_id = message.chat.id
+                    existing_job.tg_progress_message_id = status_msg.message_id
+                    await session.commit()
+                except Exception:
+                    logger.exception(f"Could not send retry progress message for job {existing_job.id}")
+                return
+            elif existing_job.status == 'REVIEW_REQUIRED':
+                await message.answer(
+                    "⚠️ Этот ролик уже анализировался и требует ручной проверки. "
+                    "Повторный автоматический запуск не создан."
+                )
                 return
         
         job_id = str(uuid.uuid4())

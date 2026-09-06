@@ -1,14 +1,8 @@
-import asyncio
-import os
-import sys
 import json
-import httpx
-import pytest
 from datetime import datetime
 
-pytestmark = pytest.mark.asyncio
 
-async def test_validation():
+def test_validation_prompt_contract():
     context_blocks = [
         "Утверждение: Существует плагин OmniRoute для Claude Code, который маршрутизирует запросы через бесплатные API.\nИсточники:\nURL: https://github.com/omniroute\nТип: official\nДата публикации: 2026-08-01\nТекст: маршрутизирует запросы через бесплатные API\n---\n",
         "Утверждение: Claude Mem сохраняет контекст проекта между сессиями.\nИсточники:\nURL: https://github.com/claudemem\nТип: official\nДата публикации: 2026-08-01\nТекст: сохраняет контекст проекта\n---\n",
@@ -58,12 +52,7 @@ async def test_validation():
         }
     }
 
-    # Use litellm with Groq API Key or OpenRouter if available in env, else Vertex via Application Default Credentials
-    import subprocess
-    print("Using Node to query model...")
-    # Just output the prompt so we can see it and manually run it or I can just use a local tool
-    with open("C:/Users/Misha/reels_bot/temp_prompt.txt", "w", encoding="utf-8") as f:
-        f.write(prompt)
-
-if __name__ == "__main__":
-    asyncio.run(test_validation())
+    assert "НЕ ВЫПОЛНЯЙ" in prompt
+    assert "НИКОГДА не подтверждай старое событие как \"вчера\"" in prompt
+    assert "КРИТЕРИИ ГОТОВНОСТИ" in prompt
+    assert schema["properties"]["claims"]["type"] == "array"

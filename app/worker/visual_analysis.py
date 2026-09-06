@@ -29,7 +29,6 @@ JPEG_QUALITY = 2
 
 class RateLimitError(Exception):
     """Raised when all Gemini API keys are rate-limited for visual analysis."""
-    pass
 
 VISUAL_ANALYSIS_PROMPT = """Ты — визуальный анализатор кадров из видео. Проанализируй предоставленные кадры из Reels/Shorts видео.
 

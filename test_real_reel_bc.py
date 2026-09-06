@@ -7,11 +7,12 @@ import sys
 sys.path.insert(0, os.path.abspath("C:/Users/Misha/reels_bot"))
 
 from dotenv import load_dotenv
+
 load_dotenv("C:/Users/Misha/reels_bot/.env")
 
-from app.worker.tasks import get_raw_transcript
+from app.worker.business_check import format_business_check_markdown, run_business_check
 from app.worker.factcheck import extract_claims, search_exa_for_claim, validate_claims
-from app.worker.business_check import run_business_check, format_business_check_markdown
+from app.worker.tasks import get_raw_transcript
 
 
 async def run_real_test():

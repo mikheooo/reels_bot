@@ -8,6 +8,7 @@ class JobStatus:
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"
     DONE = "DONE"
+    PARTIAL = "PARTIAL"
     ERROR = "ERROR"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
 
@@ -41,6 +42,10 @@ class Job(Base):
     transcription_model = Column(String, nullable=True)
     transcription_fallback_used = Column(String, nullable=True)
     transcription_status = Column(String, nullable=True)
+    # Structured delivery outcome for channel, plan and Task side effects.
+    delivery_status = Column(JSON, nullable=True)
+    # Post-Publish Audit is currently deferred, including legacy due rows.
+    audit_state = Column(String, nullable=True)
 
 class Task(Base):
     __tablename__ = "tasks"

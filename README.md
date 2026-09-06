@@ -31,7 +31,7 @@ tests/      pytest suite (mocked Gemini/Exa; no live network)
 
 ## Tech stack
 
-Python, aiogram, ARQ + Redis, PostgreSQL (asyncpg/SQLAlchemy), Pydantic,
+Python 3.13, aiogram, ARQ + Redis, PostgreSQL (asyncpg/SQLAlchemy), Pydantic,
 Google Gemini API, Exa, Docker / docker-compose.
 
 ## Run locally
@@ -47,10 +47,15 @@ run Redis and PostgreSQL, then start the bot and the ARQ worker.
 ## Tests
 
 ```bash
-pytest tests -q
+pytest -m "not integration" -q
 ```
 
-All external services (Gemini, Exa, Telegram, DB) are mocked in tests.
+The offline gate excludes tests marked `integration`; it must not contact
+Gemini, Exa, Telegram, PostgreSQL, or Redis. Integration tests are opt-in.
+
+Production builds and deploys must use `scripts/release.ps1`; it refuses a
+dirty Git tree and bakes the exact Git SHA into OCI labels and runtime logs.
+See `docs/RELEASE_OPERATIONS.md` for backup, restore and provenance commands.
 
 ## Limitations / notes
 
@@ -61,3 +66,5 @@ All external services (Gemini, Exa, Telegram, DB) are mocked in tests.
 - Requires Docker or locally running Redis + PostgreSQL.
 - Designed for personal single-user operation (admin user id comes from
   environment/configuration, not hard-coded).
+- Post-Publish Audit is deferred. Historical schedule timestamps are preserved
+  as `DEFERRED_LEGACY`; new jobs do not create audit schedules.

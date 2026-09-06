@@ -5,11 +5,13 @@ from aiogram import Bot, Dispatcher
 
 from app.bot.handlers import router
 from app.core.config import settings
+from app.core.runtime import log_release_identity
 from app.db.database import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 async def main():
+    log_release_identity(logging.getLogger(__name__))
     await init_db()
     bot = Bot(token=settings.bot_token)
     try:

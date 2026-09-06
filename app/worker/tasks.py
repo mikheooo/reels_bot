@@ -7,7 +7,7 @@ import shutil
 import time
 import traceback
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import google.generativeai as genai
 import googleapiclient.http
@@ -50,6 +50,20 @@ googleapiclient.http.HttpRequest.execute = _patched_execute
 logger = logging.getLogger(__name__)
 genai.configure(api_key=settings.gemini_api_key)
 
+
+def determine_completion_status(delivery_status: dict[str, str]) -> str:
+    """DONE means every applicable delivery step succeeded or was idempotently skipped."""
+    return (
+        "PARTIAL"
+        if any(value.startswith("FAILED") for value in delivery_status.values())
+        else "DONE"
+    )
+
+
+def deferred_audit_fields() -> dict[str, str | None]:
+    """Option B: Post-Publish Audit is not an active production capability."""
+    return {"audit_scheduled_at": None, "audit_state": "DEFERRED"}
+
 # Hard per-call timeouts (seconds) so a hung Gemini key rotates instead of
 # blocking the whole ARQ job until job_timeout (600s) silently kills it.
 CALL_GEN_TIMEOUT = float(os.getenv("GEMINI_GEN_TIMEOUT", "360"))       # generate_content
@@ -64,7 +78,7 @@ async def update_job_status(job_id: str, status: str, **kwargs):
             # The reaper needs the moment processing actually began — created_at
             # is when the row was inserted, which can be hours earlier when the
             # job sat in QUEUED behind others.
-            if status == 'PROCESSING':
+            if status == 'PROCESSING' and job.started_at is None:
                 job.started_at = datetime.utcnow()
             for k, v in kwargs.items():
                 setattr(job, k, v)
@@ -1001,6 +1015,13 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         extracted_tasks = extract_routed_tasks(task_material, url=url) if policy.create_tasks else []
         primary_title = extracted_tasks[0]['title'] if extracted_tasks else 'Интеграция решения из видео'
 
+        delivery_status = {
+            "user": "PENDING",
+            "channel": "NOT_APPLICABLE",
+            "plan": "NOT_APPLICABLE",
+            "task_db": "NOT_APPLICABLE",
+        }
+
         # Сохраняем разбор видео в Hermes plans (чистый бриф для архитектора)
         plan_file = f"/plans/idea_{job_id}.md"
         try:
@@ -1012,6 +1033,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 f.write("\n\n---\n\n")
                 f.write(analysis)
             logger.info(f"Video idea brief saved to {plan_file} with title: {primary_title}")
+            delivery_status["plan"] = "SUCCEEDED"
             
             # Добавляем в общий список (Backlog)
             backlog_file = "/plans/BACKLOG.md"
@@ -1023,6 +1045,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         except ValueError:
             logger.info("Task/plan creation skipped by Content Router policy.")
         except Exception as e:
+            delivery_status["plan"] = f"FAILED:{type(e).__name__}"
             logger.error(f"Failed to save idea brief to {plan_file}: {e}")
 
         qa_reasons_data = {
@@ -1032,6 +1055,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             "policy": policy.model_dump(),
             "specialized_analysis": specialized.model_dump() if specialized else None,
             "detail_sections": detail_sections,
+            "delivery_status": delivery_status,
             "audit_history": [],
         }
         # Persist callback payload before the message containing its buttons is sent.
@@ -1051,14 +1075,21 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         if width > 0 and height > 0:
             send_kwargs["width"] = width
             send_kwargs["height"] = height
-        msg = await bot.send_video(**send_kwargs)
-        # Compact answer is one message; detailed layers stay behind callbacks.
-        await bot.send_message(
-            chat_id=user_id,
-            text=analysis,
-            reply_markup=analysis_keyboard(job_id, list(detail_sections)),
-        )
-        await bot.session.close()
+        try:
+            msg = await bot.send_video(**send_kwargs)
+            # Compact answer is one message; detailed layers stay behind callbacks.
+            await bot.send_message(
+                chat_id=user_id,
+                text=analysis,
+                reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+            )
+            delivery_status["user"] = "SUCCEEDED"
+        except Exception as user_delivery_err:
+            delivery_status["user"] = f"FAILED:{type(user_delivery_err).__name__}"
+            await update_job_status(job_id, "PROCESSING", delivery_status=delivery_status)
+            raise
+        finally:
+            await bot.session.close()
         
         # Publish to channel — idempotent: skip if this video was already published.
         channel_msg_id = None
@@ -1068,6 +1099,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         except Exception:
             url_hash = None
         already_published = False
+        dedup_check_ok = True
         try:
             if url_hash:
                 async with AsyncSessionLocal() as dup_s:
@@ -1084,16 +1116,20 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                         url_hash, dup_job.id, dup_job.created_at,
                     )
         except Exception as dedup_err:
+            dedup_check_ok = False
+            delivery_status["channel"] = f"FAILED_DEDUP_CHECK:{type(dedup_err).__name__}"
             logger.error(f"Dedup check failed (non-blocking): {dedup_err}")
 
         if already_published:
+            delivery_status["channel"] = "SKIPPED_DUPLICATE"
             logger.info("Skipping channel publish (duplicate video). User already received the analysis above.")
-        else:
+        elif dedup_check_ok:
+            channel_bot = None
             try:
                 channel_id = settings.channel_chat_id or "@savemyreels"
                 logger.info(f"Publishing to channel {channel_id}")
                 channel_session = AiohttpSession(timeout=ClientTimeout(total=900))
-                bot = Bot(token=settings.bot_token, session=channel_session)
+                channel_bot = Bot(token=settings.bot_token, session=channel_session)
                 channel_kwargs = {
                     "chat_id": channel_id,
                     "video": FSInputFile(video_path),
@@ -1101,14 +1137,18 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 if width > 0 and height > 0:
                     channel_kwargs["width"] = width
                     channel_kwargs["height"] = height
-                ch_msg = await bot.send_video(**channel_kwargs)
+                ch_msg = await channel_bot.send_video(**channel_kwargs)
                 channel_msg_id = ch_msg.message_id
                 summary = _extract_summary(analysis)
-                await send_long_text(bot, channel_id, summary)
-                await bot.session.close()
+                await send_long_text(channel_bot, channel_id, summary)
+                delivery_status["channel"] = "SUCCEEDED"
                 logger.info(f"Published to channel successfully. msg_id={channel_msg_id}")
             except Exception as e:
+                delivery_status["channel"] = f"FAILED:{type(e).__name__}"
                 logger.error(f"Channel publish failed: {e}")
+            finally:
+                if channel_bot is not None:
+                    await channel_bot.session.close()
 
         # Only set tg_channel_message_id when we actually published; on a dedup
         # skip, leave the existing marker intact so idempotency holds across runs.
@@ -1116,18 +1156,10 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             "tg_file_id": msg.video.file_id,
             "analysis_text": analysis,
             "qa_reasons": qa_reasons_data,
-            "audit_scheduled_at": (
-                datetime.utcnow() + timedelta(hours=24) if policy.run_fact_check else None
-            ),
+            **deferred_audit_fields(),
         }
         if channel_msg_id:
             done_kwargs["tg_channel_message_id"] = channel_msg_id
-        await update_job_status(job_id, 'DONE', **done_kwargs)
-        await set_progress(
-            job_id, "COMPLETE",
-            reply_markup=analysis_keyboard(job_id, list(detail_sections)),
-        )
-
         # Сохраняем задачи в базу данных (PostgreSQL)
         try:
             if extracted_tasks:
@@ -1144,10 +1176,41 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                         session.add(new_task)
                     await session.commit()
                 logger.info(f"Tasks saved to DB: {[t['title'] for t in extracted_tasks]}")
+                delivery_status["task_db"] = "SUCCEEDED"
         except Exception as e:
+            delivery_status["task_db"] = f"FAILED:{type(e).__name__}"
             logger.error(f"Failed to save task to DB: {e}")
 
-        logger.info(f"Job {job_id} completed successfully.")
+        qa_reasons_data["delivery_status"] = delivery_status
+        done_kwargs["qa_reasons"] = qa_reasons_data
+        done_kwargs["delivery_status"] = delivery_status
+        completion_status = determine_completion_status(delivery_status)
+        if completion_status == "PARTIAL":
+            failed_steps = [
+                name for name, outcome in delivery_status.items()
+                if outcome.startswith("FAILED")
+            ]
+            done_kwargs["error_text"] = "Partial delivery failure: " + ", ".join(failed_steps)
+        else:
+            done_kwargs["error_text"] = None
+        await update_job_status(job_id, completion_status, **done_kwargs)
+        await set_progress(
+            job_id, "PARTIAL" if completion_status == "PARTIAL" else "COMPLETE",
+            reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+        )
+        if completion_status == "PARTIAL":
+            warning_bot = Bot(token=settings.bot_token)
+            try:
+                await warning_bot.send_message(
+                    chat_id=user_id,
+                    text="⚠️ Анализ готов, но часть delivery-шагов требует проверки.",
+                )
+            except Exception:
+                logger.exception("Could not send partial-delivery warning for job %s", job_id)
+            finally:
+                await warning_bot.session.close()
+
+        logger.info(f"Job {job_id} completed with status {completion_status}.")
         
     except asyncio.CancelledError:
         # ARQ cancels this coroutine when job_timeout is reached (or the worker
@@ -1168,7 +1231,10 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         raise
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
-        await update_job_status(job_id, 'ERROR', error_text=format_error_text(e))
+        error_kwargs = {"error_text": format_error_text(e)}
+        if "delivery_status" in locals():
+            error_kwargs["delivery_status"] = delivery_status
+        await update_job_status(job_id, 'ERROR', **error_kwargs)
         await set_progress(job_id, "ERROR")
         bot = Bot(token=settings.bot_token)
         try:

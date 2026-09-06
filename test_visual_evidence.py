@@ -22,24 +22,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.worker.structured_analysis import REPORT_PROMPT, generate_structured_analysis
 from app.worker.visual_analysis import (
     VISUAL_ANALYSIS_PROMPT,
     VISUAL_ANALYSIS_SCHEMA,
     RateLimitError,
+    analyze_frames_with_vision,
     extract_keyframes,
     extract_visual_evidence,
-    analyze_frames_with_vision,
     format_visual_evidence,
     get_video_duration,
 )
-from app.worker.structured_analysis import REPORT_PROMPT, generate_structured_analysis
-
 
 # ---------------------------------------------------------------------------
 # Frame extraction contract
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_get_video_duration_returns_float():
     """get_video_duration returns a positive float for a valid video."""
     duration = await get_video_duration("test_vid.mp4")
@@ -48,6 +48,7 @@ async def test_get_video_duration_returns_float():
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_extract_keyframes_returns_list_of_dicts():
     """extract_keyframes returns list of dicts with timestamp and jpeg_b64."""
     frames = await extract_keyframes("test_vid.mp4", max_frames=4)

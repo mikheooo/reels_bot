@@ -1,11 +1,13 @@
 import pytest
+
 from app.worker.tasks import (
+    _extract_task,
     clean_title_str,
+    extract_tasks_from_analysis,
     is_valid_title,
     truncate_to_words,
-    extract_tasks_from_analysis,
-    _extract_task,
 )
+
 
 def test_generic_title_rejection():
     """Verify that generic placeholders are flagged as invalid and cleaned."""
@@ -158,6 +160,7 @@ def test_title_word_length():
 def test_pipeline_title_synchronization(tmp_path):
     """End-to-end test verifying title synchronization across H1 brief, BACKLOG.md, and Task model."""
     import uuid
+
     from app.db.models import Task
 
     analysis = """
@@ -201,8 +204,7 @@ def test_pipeline_title_synchronization(tmp_path):
     # 3. Simulate BACKLOG.md entry
     backlog_file = str(tmp_path / "BACKLOG.md")
     with open(backlog_file, "a", encoding="utf-8") as bf:
-        for t in extracted_tasks:
-            bf.write(f"- [ ] [{t['title']}]({plan_file}) - {url}\n")
+        bf.writelines(f"- [ ] [{t['title']}]({plan_file}) - {url}\n" for t in extracted_tasks)
 
     with open(backlog_file, "r", encoding="utf-8") as bf:
         backlog_content = bf.read().strip()

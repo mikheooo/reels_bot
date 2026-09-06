@@ -1,21 +1,15 @@
-import logging
-logging.basicConfig(level=logging.INFO)
 import asyncio
-import os
-import sys
+import logging
+
 import pytest
-from dotenv import load_dotenv
-
-pytestmark = pytest.mark.asyncio
-
-os.chdir(os.path.abspath("C:/Users/Misha/reels_bot"))
-sys.path.insert(0, os.path.abspath("C:/Users/Misha/reels_bot"))
-load_dotenv(os.path.abspath("C:/Users/Misha/reels_bot/.env"))
 
 from app.worker.factcheck import validate_claims
 from app.worker.schemas import Claim, SearchResult
 
-@pytest.mark.integration
+logging.basicConfig(level=logging.INFO)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
 async def test_validation():
     # Mock claims based on the video about 5 Claude Code plugins
     claims = [

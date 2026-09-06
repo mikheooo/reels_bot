@@ -1,8 +1,11 @@
 import os
 import uuid
+
 import pytest
-from app.worker.tasks import extract_tasks_from_analysis
+
 from app.db.models import Task
+from app.worker.tasks import extract_tasks_from_analysis
+
 
 def test_case_1_single_explicit_task():
     """Case 1: Single explicit ЗАДАЧА with specific action title."""

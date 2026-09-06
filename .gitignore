@@ -16,6 +16,12 @@ node_modules/
 graphify-out/
 *.mp4
 temp_prompt.txt
+/backups/
+
+# Local agent/orchestration artifacts (preserved locally, never released)
+/.hermes.md
+/scripts/oc_run.sh
+/test_visual_evidence_pipeline.py
 
 # Logs & Data
 *.log

@@ -12,13 +12,13 @@ Safety Features:
 - Supports --dry-run to inspect planned changes without applying them.
 """
 
-import os
-import sys
-import re
-import uuid
-import shutil
 import argparse
 import asyncio
+import os
+import re
+import shutil
+import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -26,11 +26,16 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from app.worker.tasks import extract_tasks_from_analysis, clean_title_str, is_valid_title
-from app.db.models import Task, Job
-from app.core.config import settings
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.core.config import settings
+from app.db.models import Job, Task
+from app.worker.tasks import (
+    clean_title_str,
+    extract_tasks_from_analysis,
+    is_valid_title,
+)
 
 PLANS_DIR = Path(os.path.expanduser("~/.hermes/plans"))
 BACKLOG_PATH = PLANS_DIR / "BACKLOG.md"

@@ -5,6 +5,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.config import settings
+from app.core.runtime import log_release_identity
 from app.db.database import engine, init_db
 from app.db.migrate import apply_migrations
 from app.worker.key_health import log_key_health
@@ -15,6 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 async def startup(ctx):
     logging.info("Worker starting up...")
+    log_release_identity(logging.getLogger(__name__))
     log_key_health()  # warn in main log if any API key is a placeholder
     await init_db()
     # create_all() never adds columns to an existing table, so started_at —

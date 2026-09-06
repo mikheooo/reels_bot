@@ -1,5 +1,13 @@
 # ROADMAP REELS ANALYZER
 
+## CURRENT RELEASE BOUNDARY
+
+Production is the reactive Telegram analysis pipeline documented in
+`README.md`. Content Router, hybrid transcription, fact-checking and delivery
+semantics are current capabilities. The prioritization module exists but is not
+connected to `process_video`. Post-Publish Audit and the content-factory design
+are deferred and must not be described as active production capabilities.
+
 ## PRIORITY 1: Мультиязычный анализ
 **Цель:** Научить пайплайн автоматически определять язык ролика и корректно работать с английским, русским, тайским, испанским, китайским, японским.
 **Включает:** Whisper (или нативный анализ Gemini), фактчекинг, QA, генерацию постов, перевод при необходимости.
