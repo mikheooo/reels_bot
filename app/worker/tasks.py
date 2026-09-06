@@ -14,14 +14,16 @@ import googleapiclient.http
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import FSInputFile
-
 from sqlalchemy import select
 
+from app.bot.analysis_view import analysis_keyboard
 from app.core.config import settings
 from app.core.normalizer import clean_url
 from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
 from app.worker.business_check import format_business_check_markdown, run_business_check
+from app.worker.compact_renderer import build_detail_sections, render_compact_analysis
+from app.worker.content_router import fallback_route, policy_for, route_content
 from app.worker.factcheck import (
     extract_claims,
     qa_audit,
@@ -29,9 +31,10 @@ from app.worker.factcheck import (
     validate_claims,
 )
 from app.worker.gemini_raw_log import key_alias, log_raw
-from app.bot.transcript_view import transcript_button
+from app.worker.personal_context import load_personal_context
 from app.worker.progress import set_progress
-from app.worker.schemas import VideoAnalysis
+from app.worker.schemas import QAResult, VideoAnalysis
+from app.worker.specialized_analysis import generate_specialized_analysis
 from app.worker.structured_analysis import generate_structured_analysis
 from app.worker.visual_analysis import extract_visual_evidence
 
@@ -471,6 +474,20 @@ def _format_independent_analysis_layers(analysis: VideoAnalysis) -> str:
     return "\n\n".join(parts)
 
 
+def _format_fact_check_only(analysis: VideoAnalysis) -> str:
+    parts = ["🔎 **НЕЗАВИСИМАЯ ПРОВЕРКА УТВЕРЖДЕНИЙ (FACT CHECK):**"]
+    if not analysis.claims:
+        parts.append("Проверяемые утверждения не выделены.")
+    for claim in analysis.claims:
+        if claim.status == "подтверждено":
+            parts.append(f"- ✅ [Подтверждено] {claim.statement}\n  (Источник: [{claim.source_type}] {claim.source_url})")
+        elif claim.status == "опровергнуто":
+            parts.append(f"- ❌ [Опровергнуто] {claim.statement}\n  (Источник: {claim.source_url})")
+        elif claim.status == "не проверено":
+            parts.append(f"- 🟡 [Не проверено] {claim.statement} ({claim.unverified_reason or 'Нет надежных источников'})")
+    return "\n\n".join(parts)
+
+
 def _compose_analysis_output(structured_analysis: str | None, analysis: VideoAnalysis, raw_video_text: str) -> str:
     """Compose canonical structured output or an explicit legacy fallback."""
     source_material_text = "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "..."
@@ -788,6 +805,24 @@ def _extract_task(analysis: str) -> dict | None:
     return tasks[0] if tasks else None
 
 
+def extract_routed_tasks(task_description: str | None, url: str = "") -> list[dict]:
+    """Build tasks only from an explicit routed action, preserving its title."""
+    if not task_description:
+        return []
+    first_line = task_description.splitlines()[0].strip()
+    match = re.match(r"(?:\*\*)?ЗАДАЧА:\s*(.+?)(?:\*\*)?$", first_line, re.IGNORECASE)
+    if match:
+        title = truncate_to_words(clean_title_str(match.group(1)))
+        if is_valid_title(title):
+            return [{
+                "title": title,
+                "description": task_description,
+                "source_type": "reel",
+                "source_url": url,
+            }]
+    return extract_tasks_from_analysis(task_description, url=url)
+
+
 async def send_long_text(bot: Bot, chat_id: int, text: str):
     """Send text that may exceed Telegram's 4096 char limit."""
     for chunk in _split_text(text):
@@ -796,20 +831,6 @@ async def send_long_text(bot: Bot, chat_id: int, text: str):
 
 
 async def process_video(ctx, job_id: str, url: str, user_id: int):
-    if not getattr(settings, 'exa_api_key', None) or not getattr(settings, 'jina_api_key', None):
-        msg = "⚠️ Ошибка пайплайна: отсутствуют ключи EXA_API_KEY или JINA_API_KEY. Проверка фактов и автоматическая публикация заблокированы."
-        logger.error(f"Job {job_id} REVIEW_REQUIRED: {msg}")
-        await update_job_status(job_id, 'REVIEW_REQUIRED', error_text=msg)
-        await set_progress(job_id, "REVIEW_REQUIRED")
-        bot = Bot(token=settings.bot_token)
-        try:
-            await bot.send_message(chat_id=user_id, text=msg)
-        except Exception:
-            pass
-        finally:
-            await bot.session.close()
-        return
-
     await update_job_status(job_id, 'PROCESSING')
     started_monotonic = time.monotonic()
     tmp_dir = f"/tmp/reels_bot/{job_id}"
@@ -849,55 +870,125 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         # Extract visual evidence from video frames for structured analysis
         visual_evidence = await extract_visual_evidence(video_path)
 
-        # Restore the Reels Analyzer report contract. The legacy reels_bot
-        # formatter below is retained only as a fallback if report generation fails.
+        # Classify first. All expensive downstream work is controlled by a
+        # deterministic policy derived from this decision.
         try:
             await set_progress(job_id, "ANALYSIS")
-            structured_analysis = await generate_structured_analysis(raw_video_text, visual_evidence)
-            logger.info("Structured Reels Analyzer report generated.")
-        except Exception as structured_err:
-            logger.error(f"Structured Reels Analyzer report failed: {structured_err}")
-            structured_analysis = None
-        
-        logger.info("Executing Phase 2 Pipeline...")
-        await set_progress(job_id, "VERIFY")
-        claims = await extract_claims(raw_video_text)
-        search_data = {}
-        for c in claims:
-            if c.claim_type == "fact":
-                search_data[c.statement] = await search_exa_for_claim(c)
-        
-        logger.info("Validating claims...")
-        analysis_obj = await validate_claims(claims, search_data)
-        
-        logger.info("Executing Business Check...")
+            route = await route_content(raw_video_text, visual_evidence)
+        except Exception as router_err:
+            logger.error(f"Content Router failed, using compatibility policy: {router_err}")
+            route = fallback_route(str(router_err))
+        policy = policy_for(route)
+        logger.info(
+            "Content route: primary=%s risk=%s fact=%s business=%s technical=%s tasks=%s",
+            route.primary_type, route.risk, policy.run_fact_check,
+            policy.run_business_check, policy.include_technical_details, policy.create_tasks,
+        )
+
+        # The former deep structured report remains an on-demand technical
+        # detail, and is generated only for routes where it adds value.
+        structured_analysis = None
+        if policy.include_technical_details:
+            try:
+                structured_analysis = await generate_structured_analysis(raw_video_text, visual_evidence)
+                logger.info("Technical structured analysis generated.")
+            except Exception as structured_err:
+                logger.error(f"Technical structured analysis failed (non-blocking): {structured_err}")
+
+        analysis_obj = VideoAnalysis(claims=[], viable_idea=False)
+        fact_check_text = None
+        business_check_text = None
+        qa_res = None
+
+        # LOW-risk content does not spend external-search calls. HIGH-risk
+        # content fails closed when strict evidence infrastructure is absent.
+        if policy.run_fact_check:
+            await set_progress(job_id, "VERIFY")
+            if not getattr(settings, 'exa_api_key', None):
+                reason = "EXA_API_KEY отсутствует: независимая проверка не выполнена."
+                fact_check_text = f"🔎 **FACT CHECK:**\n{reason}"
+                if policy.strict_fact_check:
+                    qa_res = QAResult(approved=False, reasons=[reason])
+            else:
+                claims = await extract_claims(raw_video_text)
+                fact_claims = [claim for claim in claims if claim.claim_type == "fact"]
+                search_data = {}
+                for claim in fact_claims:
+                    search_data[claim.statement] = await search_exa_for_claim(claim)
+                analysis_obj = await validate_claims(claims, search_data)
+                fact_check_text = _format_fact_check_only(analysis_obj)
+                if policy.strict_fact_check:
+                    if not fact_claims:
+                        qa_res = QAResult(
+                            approved=False,
+                            reasons=["HIGH-risk материал не дал проверяемых fact claims."],
+                        )
+                    else:
+                        qa_res = await qa_audit(analysis_obj)
+
+        if policy.run_business_check:
+            logger.info("Executing routed Business Check...")
+            try:
+                bc_res = await run_business_check(
+                    transcript=raw_video_text,
+                    claims=analysis_obj.claims,
+                    factcheck_analysis=analysis_obj,
+                )
+                analysis_obj.business_check = bc_res
+                business_check_text = format_business_check_markdown(bc_res)
+            except Exception as bc_err:
+                logger.error(f"Business Check failed (non-blocking): {bc_err}")
+
+        personal_context = load_personal_context() if policy.run_personal_relevance else {
+            "status": "NOT_APPLICABLE", "evidence": []
+        }
         try:
-            bc_res = await run_business_check(
+            specialized = await generate_specialized_analysis(
                 transcript=raw_video_text,
-                claims=claims,
-                factcheck_analysis=analysis_obj
+                visual_evidence=visual_evidence,
+                route=route,
+                policy=policy,
+                personal_context=personal_context,
+                fact_check_text=fact_check_text or "Не запускался по policy.",
+                business_check_text=business_check_text or "Не запускался по policy.",
             )
-            analysis_obj.business_check = bc_res
-        except Exception as bc_err:
-            logger.error(f"Business Check failed (non-blocking): {bc_err}")
+            analysis = render_compact_analysis(route, specialized)
+            detail_sections = build_detail_sections(
+                specialized, fact_check_text, business_check_text, structured_analysis
+            )
+        except Exception as specialized_err:
+            logger.error(f"Specialized analysis failed, using legacy composition: {specialized_err}")
+            analysis = _compose_analysis_output(structured_analysis, analysis_obj, raw_video_text)
+            detail_sections = {}
+            specialized = None
 
-        logger.info("Running QA Audit...")
-        qa_res = await qa_audit(analysis_obj)
-        
-        # Structured report is canonical. Independent Fact Check and Business Check
-        # remain separate layers and are appended deterministically.
         await set_progress(job_id, "FINALIZE")
-        analysis = _compose_analysis_output(structured_analysis, analysis_obj, raw_video_text)
 
-        if not qa_res.approved:
-            msg = "⚠️ Пост заблокирован QA-контроллером.\nПричины:\n- " + "\n- ".join(qa_res.reasons)
+        if qa_res is not None and not qa_res.approved:
+            msg = "⚠️ Строгая проверка не пройдена. Автопубликация и создание задачи заблокированы.\nПричины:\n- " + "\n- ".join(qa_res.reasons or [])
             logger.warning(msg)
-            await update_job_status(job_id, 'REVIEW_REQUIRED', error_text=msg, qa_reasons=qa_res.reasons)
-            await set_progress(job_id, "REVIEW_REQUIRED", reply_markup=transcript_button(job_id))
+            qa_reasons_data = {
+                "analysis_json": analysis_obj.model_dump(),
+                "router": route.model_dump(),
+                "policy": policy.model_dump(),
+                "detail_sections": detail_sections,
+                "audit_history": [],
+            }
+            await update_job_status(
+                job_id, 'REVIEW_REQUIRED', error_text=msg,
+                analysis_text=analysis, qa_reasons=qa_reasons_data,
+            )
+            await set_progress(
+                job_id, "REVIEW_REQUIRED",
+                reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+            )
             bot = Bot(token=settings.bot_token)
             try:
                 await bot.send_message(chat_id=user_id, text=msg)
-                await send_long_text(bot, user_id, analysis)
+                await bot.send_message(
+                    chat_id=user_id, text=analysis,
+                    reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+                )
             except Exception:
                 pass
             finally:
@@ -905,15 +996,20 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             return
 
 
-        # Извлекаем задачи из анализа с содержательными заголовками
-        extracted_tasks = extract_tasks_from_analysis(analysis, url=url)
+        # Tasks are a routed downstream capability, not a universal side effect.
+        task_material = specialized.task_description if specialized else None
+        extracted_tasks = extract_routed_tasks(task_material, url=url) if policy.create_tasks else []
         primary_title = extracted_tasks[0]['title'] if extracted_tasks else 'Интеграция решения из видео'
 
         # Сохраняем разбор видео в Hermes plans (чистый бриф для архитектора)
         plan_file = f"/plans/idea_{job_id}.md"
         try:
+            if not extracted_tasks:
+                raise ValueError("No routed task to persist")
             with open(plan_file, "w", encoding="utf-8") as f:
                 f.write(f"# {primary_title}\n\n")
+                f.write(task_material or analysis)
+                f.write("\n\n---\n\n")
                 f.write(analysis)
             logger.info(f"Video idea brief saved to {plan_file} with title: {primary_title}")
             
@@ -924,8 +1020,24 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                     bf.write("# База Идей (Backlog)\n\n")
                 bf.writelines(f"- [ ] [{t['title']}]({plan_file.split('/')[-1]}) - {url}\n" for t in extracted_tasks)
                 
+        except ValueError:
+            logger.info("Task/plan creation skipped by Content Router policy.")
         except Exception as e:
             logger.error(f"Failed to save idea brief to {plan_file}: {e}")
+
+        qa_reasons_data = {
+            "analysis_json": analysis_obj.model_dump(),
+            "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
+            "router": route.model_dump(),
+            "policy": policy.model_dump(),
+            "specialized_analysis": specialized.model_dump() if specialized else None,
+            "detail_sections": detail_sections,
+            "audit_history": [],
+        }
+        # Persist callback payload before the message containing its buttons is sent.
+        await update_job_status(
+            job_id, "PROCESSING", analysis_text=analysis, qa_reasons=qa_reasons_data
+        )
 
         # Send result to user
         logger.info(f"Sending to TG user {user_id}")
@@ -940,8 +1052,12 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             send_kwargs["width"] = width
             send_kwargs["height"] = height
         msg = await bot.send_video(**send_kwargs)
-        # Analysis as separate message(s) — full text, split if needed
-        await send_long_text(bot, user_id, analysis)
+        # Compact answer is one message; detailed layers stay behind callbacks.
+        await bot.send_message(
+            chat_id=user_id,
+            text=analysis,
+            reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+        )
         await bot.session.close()
         
         # Publish to channel — idempotent: skip if this video was already published.
@@ -994,23 +1110,23 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             except Exception as e:
                 logger.error(f"Channel publish failed: {e}")
 
-        qa_reasons_data = {
-            "analysis_json": analysis_obj.model_dump(),
-            "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
-            "audit_history": []
-        }
         # Only set tg_channel_message_id when we actually published; on a dedup
         # skip, leave the existing marker intact so idempotency holds across runs.
-        done_kwargs = dict(
-            tg_file_id=msg.video.file_id,
-            analysis_text=analysis,
-            qa_reasons=qa_reasons_data,
-            audit_scheduled_at=datetime.utcnow() + timedelta(hours=24),
-        )
+        done_kwargs = {
+            "tg_file_id": msg.video.file_id,
+            "analysis_text": analysis,
+            "qa_reasons": qa_reasons_data,
+            "audit_scheduled_at": (
+                datetime.utcnow() + timedelta(hours=24) if policy.run_fact_check else None
+            ),
+        }
         if channel_msg_id:
             done_kwargs["tg_channel_message_id"] = channel_msg_id
         await update_job_status(job_id, 'DONE', **done_kwargs)
-        await set_progress(job_id, "COMPLETE", reply_markup=transcript_button(job_id))
+        await set_progress(
+            job_id, "COMPLETE",
+            reply_markup=analysis_keyboard(job_id, list(detail_sections)),
+        )
 
         # Сохраняем задачи в базу данных (PostgreSQL)
         try:

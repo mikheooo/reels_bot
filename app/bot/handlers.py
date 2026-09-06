@@ -7,11 +7,12 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from sqlalchemy import select
 
+from app.bot.analysis_view import DETAIL_LABELS, analysis_keyboard
+from app.bot.transcript_view import LEGACY_TEXT, send_full_transcript, transcript_button
 from app.core.config import settings
 from app.core.normalizer import clean_url, is_valid_url
 from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
-from app.bot.transcript_view import LEGACY_TEXT, send_full_transcript, transcript_button
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -191,6 +192,27 @@ async def full_transcript(callback: types.CallbackQuery):
         await callback.message.answer("Не получилось отправить расшифровку, попробуйте позже.")
 
 
+@router.callback_query(F.data.startswith("detail:"))
+async def analysis_detail(callback: types.CallbackQuery):
+    _, section, job_id = callback.data.split(":", 2)
+    async with AsyncSessionLocal() as session:
+        job = await session.get(Job, job_id)
+        payload = job.qa_reasons if job and isinstance(job.qa_reasons, dict) else {}
+        text = (payload.get("detail_sections") or {}).get(section)
+    if not text:
+        await callback.answer("Этот раздел для ролика не создавался.", show_alert=True)
+        return
+    await callback.answer(DETAIL_LABELS.get(section, "Открываю…"))
+    remaining = text
+    while remaining:
+        chunk = remaining[:4096]
+        split_at = chunk.rfind("\n\n")
+        if len(remaining) > 4096 and split_at > 1500:
+            chunk = chunk[:split_at]
+        await callback.message.answer(chunk)
+        remaining = remaining[len(chunk):].strip()
+
+
 @router.message()
 async def handle_url(message: types.Message):
     url = message.text.strip()
@@ -210,16 +232,22 @@ async def handle_url(message: types.Message):
                 await message.answer("🎬 Это видео уже анализировалось. Вот результат:")
                 await message.answer_video(existing_job.tg_file_id)
                 if existing_job.analysis_text:
-                    # Split long text into chunks
+                    payload = existing_job.qa_reasons if isinstance(existing_job.qa_reasons, dict) else {}
+                    sections = list((payload.get("detail_sections") or {}).keys())
                     text = existing_job.analysis_text
+                    first = True
                     while text:
-                        await message.answer(text[:4096])
+                        await message.answer(
+                            text[:4096],
+                            reply_markup=(
+                                analysis_keyboard(existing_job.id, sections, bool(existing_job.full_transcript))
+                                if first else None
+                            ),
+                        )
+                        first = False
                         text = text[4096:].strip()
-                if existing_job.full_transcript:
-                    await message.answer(
-                        "Нужен весь текст ролика без сокращений?",
-                        reply_markup=transcript_button(existing_job.id),
-                    )
+                elif existing_job.full_transcript:
+                    await message.answer("Нужен весь текст ролика?", reply_markup=transcript_button(existing_job.id))
                 return
             elif existing_job.status in ('QUEUED', 'PROCESSING'):
                 await message.answer("Это видео уже в очереди или обрабатывается. Я пришлю результат, как только он будет готов.")
