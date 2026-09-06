@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.runtime import log_release_identity
 from app.db.database import engine, init_db
 from app.db.migrate import apply_migrations
+from app.worker.audit_scheduler import cron_audit_v2_jobs
 from app.worker.key_health import log_key_health
 from app.worker.reaper import expire_stale_processing, reap_stale_jobs
 from app.worker.tasks import process_video
@@ -59,5 +60,11 @@ class WorkerSettings:
             minute={0, 10, 20, 30, 40, 50},
             run_at_startup=False,
             unique=True,
-        )
+        ),
+        cron(
+            cron_audit_v2_jobs,
+            minute={5, 20, 35, 50},
+            run_at_startup=False,
+            unique=True,
+        ),
     ]

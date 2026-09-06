@@ -133,6 +133,52 @@ async def apply_migrations(engine) -> None:
             "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;",
             "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMP WITHOUT TIME ZONE;",
             "CREATE INDEX IF NOT EXISTS ix_content_deliveries_publication_key ON content_deliveries (publication_key);",
+            """
+            CREATE TABLE IF NOT EXISTS audit_targets (
+                id VARCHAR PRIMARY KEY,
+                package_id VARCHAR NOT NULL REFERENCES content_packages(id),
+                delivery_id VARCHAR NOT NULL,
+                target VARCHAR NOT NULL,
+                variant VARCHAR,
+                provider_post_id VARCHAR NOT NULL,
+                provider_url VARCHAR,
+                publication_key VARCHAR NOT NULL,
+                approved_payload_hash VARCHAR NOT NULL,
+                approved_payload_text TEXT NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'SCHEDULED',
+                tier INTEGER NOT NULL DEFAULT 0,
+                next_audit_at TIMESTAMP WITHOUT TIME ZONE,
+                last_checked_at TIMESTAMP WITHOUT TIME ZONE,
+                last_result_status VARCHAR,
+                last_error_code VARCHAR,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_audit_targets_package_id ON audit_targets (package_id);",
+            "CREATE INDEX IF NOT EXISTS ix_audit_targets_status_next_audit ON audit_targets (status, next_audit_at);",
+            "CREATE INDEX IF NOT EXISTS ix_audit_targets_publication_key ON audit_targets (publication_key);",
+            """
+            CREATE TABLE IF NOT EXISTS audit_snapshots (
+                id VARCHAR PRIMARY KEY,
+                audit_id VARCHAR NOT NULL REFERENCES audit_targets(id),
+                occurrence_key VARCHAR UNIQUE NOT NULL,
+                checked_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                object_exists BOOLEAN NOT NULL,
+                content_hash VARCHAR,
+                content_match BOOLEAN,
+                metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+                normalized_metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+                metric_deltas JSONB,
+                provider_http_status INTEGER,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                status VARCHAR NOT NULL,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_audit_snapshots_audit_id ON audit_snapshots (audit_id);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_snapshots_occurrence_key ON audit_snapshots (occurrence_key);",
         ]
 
         for q in queries:

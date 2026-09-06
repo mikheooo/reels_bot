@@ -232,7 +232,19 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                     intent_existing.last_error_message = intent.last_error_message
                     intent_existing.provider_post_id = intent.provider_post_id
                     intent_existing.provider_url = intent.provider_url
-                    intent_existing.updated_at = now_naive
+            from app.worker.audit_scheduler import register_audit_target_if_eligible
+            for record in pkg.delivery_records:
+                target_obj = pkg.distribution_targets.get(record.target.value)
+                approved_text = (target_obj.rendered_payload if target_obj else "") or ""
+                try:
+                    await register_audit_target_if_eligible(
+                        session=session,
+                        delivery_record=record,
+                        approved_text=approved_text,
+                        package_id=pkg.package_id,
+                    )
+                except Exception as audit_reg_err:
+                    logger.warning("Could not register audit target for %s: %s", record.delivery_id, audit_reg_err)
 
             await session.commit()
     except Exception as e:

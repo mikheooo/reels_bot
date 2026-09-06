@@ -159,6 +159,10 @@ class LookupResult(BaseModel):
     created_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    http_status: int | None = None
+    raw_metrics: dict[str, Any] = Field(default_factory=dict)
+    permalink: str | None = None
+    rate_limit_info: RateLimitInfo | None = None
 
 
 class AmbiguousReconciliationResult(BaseModel):
@@ -401,27 +405,58 @@ class XConnector(PublicationConnector):
 
         client = self._get_client()
         headers = self._get_auth_headers()
-        url = f"https://api.x.com/2/tweets/{provider_post_id}?tweet.fields=text,created_at,author_id"
+        url = f"https://api.x.com/2/tweets/{provider_post_id}?tweet.fields=text,created_at,author_id,public_metrics"
 
         try:
             resp = await client.get(url, headers=headers)
+            rate_info = extract_rate_limit_info(resp.headers)
             if resp.status_code == 200:
                 data = resp.json().get("data", {})
+                raw_metrics = data.get("public_metrics", {}) or {}
+                permalink = f"https://x.com/i/status/{provider_post_id}"
                 return LookupResult(
                     found=True,
-                    provider_post_id=str(data.get("id", "")),
+                    provider_post_id=str(data.get("id", "") or provider_post_id),
                     text=data.get("text"),
                     author_id=str(data.get("author_id", "")),
                     created_at=data.get("created_at"),
+                    http_status=200,
+                    raw_metrics=raw_metrics,
+                    permalink=permalink,
+                    rate_limit_info=rate_info,
                 )
             elif resp.status_code == 404:
-                return LookupResult(found=False, error_code="POST_NOT_FOUND")
+                return LookupResult(
+                    found=False,
+                    http_status=404,
+                    error_code="POST_NOT_FOUND",
+                    error_message="Post not found on X.",
+                    rate_limit_info=rate_info,
+                )
+            elif resp.status_code in (401, 403):
+                return LookupResult(
+                    found=False,
+                    http_status=resp.status_code,
+                    error_code="AUTH_REQUIRED",
+                    error_message=sanitize_sensitive_text(resp.text),
+                    rate_limit_info=rate_info,
+                )
+            elif resp.status_code == 429:
+                return LookupResult(
+                    found=False,
+                    http_status=429,
+                    error_code="RATE_LIMITED",
+                    error_message=sanitize_sensitive_text(resp.text),
+                    rate_limit_info=rate_info,
+                )
             else:
                 _, err_code = self.classify_error(resp.status_code, resp.text)
                 return LookupResult(
                     found=False,
+                    http_status=resp.status_code,
                     error_code=err_code,
                     error_message=sanitize_sensitive_text(resp.text),
+                    rate_limit_info=rate_info,
                 )
         except Exception as e:
             return LookupResult(
@@ -718,22 +753,75 @@ class ThreadsConnector(PublicationConnector):
         )
         try:
             resp = await client.get(url)
+            rate_info = extract_rate_limit_info(resp.headers)
             if resp.status_code == 200:
                 data = resp.json()
+                permalink = data.get("permalink")
+                raw_metrics: dict[str, Any] = {}
+
+                # Query official Meta Threads Insights endpoint
+                try:
+                    insights_url = (
+                        f"https://graph.threads.net/v1.0/{provider_post_id}/insights"
+                        f"?metric=views,likes,replies,reposts,quotes&access_token={self.access_token}"
+                    )
+                    insights_resp = await client.get(insights_url)
+                    if insights_resp.status_code == 200:
+                        idata = insights_resp.json().get("data", [])
+                        for item in idata:
+                            metric_name = item.get("name")
+                            values = item.get("values", [])
+                            if metric_name and values:
+                                val = values[0].get("value")
+                                if val is not None:
+                                    raw_metrics[metric_name] = val
+                            elif metric_name and item.get("total_value") is not None:
+                                raw_metrics[metric_name] = item.get("total_value", {}).get("value")
+                except Exception as insights_err:
+                    logger.debug("Threads insights fetch non-fatal error: %s", insights_err)
+
                 return LookupResult(
                     found=True,
-                    provider_post_id=str(data.get("id", "")),
+                    provider_post_id=str(data.get("id", "") or provider_post_id),
                     text=data.get("text"),
                     created_at=data.get("timestamp"),
+                    http_status=200,
+                    raw_metrics=raw_metrics,
+                    permalink=permalink,
+                    rate_limit_info=rate_info,
                 )
             elif resp.status_code == 404:
-                return LookupResult(found=False, error_code="POST_NOT_FOUND")
+                return LookupResult(
+                    found=False,
+                    http_status=404,
+                    error_code="POST_NOT_FOUND",
+                    error_message="Post not found on Threads.",
+                    rate_limit_info=rate_info,
+                )
+            elif resp.status_code in (401, 403):
+                return LookupResult(
+                    found=False,
+                    http_status=resp.status_code,
+                    error_code="AUTH_REQUIRED",
+                    error_message=sanitize_sensitive_text(resp.text),
+                    rate_limit_info=rate_info,
+                )
+            elif resp.status_code == 429:
+                return LookupResult(
+                    found=False,
+                    http_status=429,
+                    error_code="RATE_LIMITED",
+                    error_message=sanitize_sensitive_text(resp.text),
+                    rate_limit_info=rate_info,
+                )
             else:
                 _, err_code = self.classify_error(resp.status_code, resp.text)
                 return LookupResult(
                     found=False,
+                    http_status=resp.status_code,
                     error_code=err_code,
                     error_message=sanitize_sensitive_text(resp.text),
+                    rate_limit_info=rate_info,
                 )
         except Exception as e:
             return LookupResult(

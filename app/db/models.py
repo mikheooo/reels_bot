@@ -1,6 +1,7 @@
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -130,4 +131,47 @@ class PublicationIntentModel(Base):
     provider_url = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AuditTargetModel(Base):
+    __tablename__ = "audit_targets"
+
+    id = Column(String, primary_key=True)
+    package_id = Column(String, ForeignKey("content_packages.id"), nullable=False, index=True)
+    delivery_id = Column(String, nullable=False, index=True)
+    target = Column(String, nullable=False)
+    variant = Column(String, nullable=True)
+    provider_post_id = Column(String, nullable=False)
+    provider_url = Column(String, nullable=True)
+    publication_key = Column(String, nullable=False, index=True)
+    approved_payload_hash = Column(String, nullable=False)
+    approved_payload_text = Column(Text, nullable=False)
+    status = Column(String, default="SCHEDULED", nullable=False, index=True)
+    tier = Column(Integer, default=0, nullable=False)
+    next_audit_at = Column(DateTime, nullable=True, index=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    last_result_status = Column(String, nullable=True)
+    last_error_code = Column(String, nullable=True)
+    attempt_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AuditSnapshotModel(Base):
+    __tablename__ = "audit_snapshots"
+
+    id = Column(String, primary_key=True)
+    audit_id = Column(String, ForeignKey("audit_targets.id"), nullable=False, index=True)
+    occurrence_key = Column(String, unique=True, nullable=False, index=True)
+    checked_at = Column(DateTime, nullable=False)
+    object_exists = Column(Boolean, nullable=False)
+    content_hash = Column(String, nullable=True)
+    content_match = Column(Boolean, nullable=True)
+    metrics = Column(JSON, nullable=False, default=dict)
+    normalized_metrics = Column(JSON, nullable=False, default=dict)
+    metric_deltas = Column(JSON, nullable=True)
+    provider_http_status = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, default=0, nullable=False)
+    status = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
 
