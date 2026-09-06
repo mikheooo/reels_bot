@@ -1272,7 +1272,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         # skip, leave the existing marker intact so idempotency holds across runs.
         done_kwargs = {
             "tg_file_id": msg.video.file_id,
-            "analysis_text": analysis,
+            "analysis_text": user_delivery_text,
             "qa_reasons": qa_reasons_data,
             **deferred_audit_fields(),
         }
