@@ -23,7 +23,7 @@ from app.db.database import AsyncSessionLocal
 from app.db.models import Job, Task
 from app.worker.business_check import format_business_check_markdown, run_business_check
 from app.worker.compact_renderer import build_detail_sections, render_compact_analysis
-from app.worker.content_router import fallback_route, policy_for, route_content
+from app.worker.content_router import fallback_route, route_content
 from app.worker.factcheck import (
     extract_claims,
     qa_audit,
@@ -32,6 +32,15 @@ from app.worker.factcheck import (
 )
 from app.worker.gemini_raw_log import key_alias, log_raw
 from app.worker.personal_context import load_personal_context
+from app.worker.prioritization import score_content
+from app.worker.priority_policy import (
+    apply_priority_policy,
+    evaluate_priority,
+    fallback_priority,
+    format_priority_summary,
+    policy_observability_payload,
+    priority_delivery_outcome,
+)
 from app.worker.progress import set_progress
 from app.worker.schemas import QAResult, VideoAnalysis
 from app.worker.specialized_analysis import generate_specialized_analysis
@@ -892,11 +901,44 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         except Exception as router_err:
             logger.error(f"Content Router failed, using compatibility policy: {router_err}")
             route = fallback_route(str(router_err))
-        policy = policy_for(route)
+
+        publish_threshold = settings.publish_threshold
+        deprioritize_threshold = settings.deprioritize_threshold
+        try:
+            priority_score = await asyncio.wait_for(
+                score_content(raw_video_text, route.summary),
+                timeout=settings.prioritization_timeout_seconds,
+            )
+            priority = evaluate_priority(
+                priority_score,
+                publish_threshold=publish_threshold,
+                deprioritize_below=deprioritize_threshold,
+            )
+        except Exception as priority_err:
+            logger.error(
+                "Prioritization failed; preserving Router safety policy: %s",
+                priority_err,
+            )
+            priority = fallback_priority(
+                priority_err,
+                publish_threshold=publish_threshold,
+                deprioritize_below=deprioritize_threshold,
+            )
+
+        combined_policy = apply_priority_policy(route, priority)
+        policy = combined_policy.effective_policy
+        policy_payload = policy_observability_payload(route, combined_policy)
+        # Persist the decision boundary before any expensive downstream work so
+        # an interrupted job still explains what Router and priority decided.
+        await update_job_status(job_id, "PROCESSING", qa_reasons=policy_payload)
         logger.info(
-            "Content route: primary=%s risk=%s fact=%s business=%s technical=%s tasks=%s",
-            route.primary_type, route.risk, policy.run_fact_check,
-            policy.run_business_check, policy.include_technical_details, policy.create_tasks,
+            "Combined policy: primary=%s risk=%s priority=%s gate=%s "
+            "fact=%s strict=%s business=%s technical=%s tasks=%s channel=%s",
+            route.primary_type, route.risk, priority.tier, priority.decision,
+            policy.run_fact_check,
+            policy.strict_fact_check, policy.run_business_check,
+            policy.include_technical_details, policy.create_tasks,
+            combined_policy.channel_publication,
         )
 
         # The former deep structured report remains an on-demand technical
@@ -975,6 +1017,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             analysis = _compose_analysis_output(structured_analysis, analysis_obj, raw_video_text)
             detail_sections = {}
             specialized = None
+        analysis += "\n\n" + format_priority_summary(priority)
 
         await set_progress(job_id, "FINALIZE")
 
@@ -984,7 +1027,8 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             qa_reasons_data = {
                 "analysis_json": analysis_obj.model_dump(),
                 "router": route.model_dump(),
-                "policy": policy.model_dump(),
+                "priority": priority.model_dump(),
+                "policy": combined_policy.model_dump(),
                 "detail_sections": detail_sections,
                 "audit_history": [],
             }
@@ -1016,6 +1060,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         primary_title = extracted_tasks[0]['title'] if extracted_tasks else 'Интеграция решения из видео'
 
         delivery_status = {
+            "priority": priority_delivery_outcome(priority),
             "user": "PENDING",
             "channel": "NOT_APPLICABLE",
             "plan": "NOT_APPLICABLE",
@@ -1043,7 +1088,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
                 bf.writelines(f"- [ ] [{t['title']}]({plan_file.split('/')[-1]}) - {url}\n" for t in extracted_tasks)
                 
         except ValueError:
-            logger.info("Task/plan creation skipped by Content Router policy.")
+            logger.info("Task/plan creation skipped by combined Router/priority policy.")
         except Exception as e:
             delivery_status["plan"] = f"FAILED:{type(e).__name__}"
             logger.error(f"Failed to save idea brief to {plan_file}: {e}")
@@ -1051,8 +1096,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         qa_reasons_data = {
             "analysis_json": analysis_obj.model_dump(),
             "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
-            "router": route.model_dump(),
-            "policy": policy.model_dump(),
+            **policy_observability_payload(route, combined_policy),
             "specialized_analysis": specialized.model_dump() if specialized else None,
             "detail_sections": detail_sections,
             "delivery_status": delivery_status,
@@ -1101,7 +1145,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         already_published = False
         dedup_check_ok = True
         try:
-            if url_hash:
+            if combined_policy.channel_publication and url_hash:
                 async with AsyncSessionLocal() as dup_s:
                     dup_job = (await dup_s.execute(
                         select(Job).where(
@@ -1120,7 +1164,13 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             delivery_status["channel"] = f"FAILED_DEDUP_CHECK:{type(dedup_err).__name__}"
             logger.error(f"Dedup check failed (non-blocking): {dedup_err}")
 
-        if already_published:
+        if not combined_policy.channel_publication:
+            delivery_status["channel"] = "SUPPRESSED_PRIORITY"
+            logger.info(
+                "Channel publication suppressed by priority gate (%s).",
+                priority.decision,
+            )
+        elif already_published:
             delivery_status["channel"] = "SKIPPED_DUPLICATE"
             logger.info("Skipping channel publish (duplicate video). User already received the analysis above.")
         elif dedup_check_ok:

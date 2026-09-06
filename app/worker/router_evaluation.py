@@ -20,6 +20,14 @@ from app.worker.content_router import (
     calibrate_decision,
     policy_for,
 )
+from app.worker.priority_policy import (
+    CombinedPolicyResult,
+    PriorityGateDecision,
+    PriorityTier,
+    apply_priority_policy,
+    evaluate_priority,
+)
+from app.worker.schemas import PriorityScore
 
 
 class ExpectedPolicy(BaseModel):
@@ -74,6 +82,26 @@ class RouterEvalReport(BaseModel):
     failed_cases: list[dict]
 
 
+class CombinedEvalCase(RouterEvalCase):
+    recorded_priority: dict
+    expected_priority_tier: PriorityTier
+    expected_gate_decision: PriorityGateDecision
+    expected_effective_policy: ExpectedPolicy
+    expected_channel_publication: bool
+    expected_suppressed_actions: list[str] = Field(default_factory=list)
+
+
+class CombinedEvalReport(BaseModel):
+    evaluation_mode: Literal["offline_router_priority_replay"] = (
+        "offline_router_priority_replay"
+    )
+    policy_version: Literal["router_priority_v1"] = "router_priority_v1"
+    cases: int
+    policy_accuracy: float
+    risk_floor_violations: int
+    failed_cases: list[dict]
+
+
 def load_cases(path: str | Path) -> list[RouterEvalCase]:
     rows = []
     for line_number, line in enumerate(
@@ -86,6 +114,22 @@ def load_cases(path: str | Path) -> list[RouterEvalCase]:
         except Exception as exc:
             raise ValueError(
                 f"Invalid router fixture at line {line_number}: {exc}"
+            ) from exc
+    return rows
+
+
+def load_combined_cases(path: str | Path) -> list[CombinedEvalCase]:
+    rows = []
+    for line_number, line in enumerate(
+        Path(path).read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        try:
+            rows.append(CombinedEvalCase(**json.loads(line)))
+        except Exception as exc:
+            raise ValueError(
+                f"Invalid combined-policy fixture at line {line_number}: {exc}"
             ) from exc
     return rows
 
@@ -187,4 +231,76 @@ def evaluate_cases(cases: list[RouterEvalCase]) -> RouterEvalReport:
         high_risk_recall=high_hits / high_expected if high_expected else 1.0,
         policy_accuracy=policy_hits / count if count else 0.0,
         failed_cases=failed_cases,
+    )
+
+
+def evaluate_combined_cases(
+    cases: list[CombinedEvalCase],
+    publish_threshold: float = 0.6,
+    deprioritize_below: float = 0.4,
+) -> CombinedEvalReport:
+    """Replay recorded Router/priority outputs through deterministic policy."""
+    failures: list[dict] = []
+    risk_floor_violations = 0
+
+    for case in cases:
+        route = calibrate_decision(RouterDecision(**case.recorded_output))
+        priority = evaluate_priority(
+            PriorityScore(**case.recorded_priority),
+            publish_threshold,
+            deprioritize_below,
+        )
+        combined: CombinedPolicyResult = apply_priority_policy(route, priority)
+        effective_matches = (
+            combined.effective_policy.model_dump()
+            == case.expected_effective_policy.model_dump()
+        )
+        safety_preserved = (
+            not combined.router_policy.run_fact_check
+            or combined.effective_policy.run_fact_check
+        ) and (
+            not combined.router_policy.strict_fact_check
+            or combined.effective_policy.strict_fact_check
+        )
+        if not safety_preserved:
+            risk_floor_violations += 1
+
+        matches = all(
+            [
+                priority.tier == case.expected_priority_tier,
+                priority.decision == case.expected_gate_decision,
+                effective_matches,
+                combined.user_delivery is True,
+                combined.channel_publication
+                == case.expected_channel_publication,
+                sorted(combined.suppressed_actions)
+                == sorted(case.expected_suppressed_actions),
+                safety_preserved,
+            ]
+        )
+        if not matches:
+            failures.append(
+                {
+                    "id": case.id,
+                    "priority": [case.expected_priority_tier, priority.tier],
+                    "gate": [case.expected_gate_decision, priority.decision],
+                    "effective_policy_match": effective_matches,
+                    "channel": [
+                        case.expected_channel_publication,
+                        combined.channel_publication,
+                    ],
+                    "suppressed": [
+                        sorted(case.expected_suppressed_actions),
+                        sorted(combined.suppressed_actions),
+                    ],
+                    "risk_floor_preserved": safety_preserved,
+                }
+            )
+
+    count = len(cases)
+    return CombinedEvalReport(
+        cases=count,
+        policy_accuracy=(count - len(failures)) / count if count else 0.0,
+        risk_floor_violations=risk_floor_violations,
+        failed_cases=failures,
     )

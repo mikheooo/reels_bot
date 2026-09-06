@@ -52,6 +52,8 @@ def _parse_json_response(text: str) -> dict:
 
 
 async def score_content(transcript: str, analysis_summary: str | None = None) -> PriorityScore:
+    if not transcript.strip():
+        raise ValueError("Prioritization requires a non-empty transcript")
     threshold = getattr(settings, "publish_threshold", DEFAULT_PUBLISH_THRESHOLD)
 
     summary_block = f"\nРезультаты предыдущего анализа:\n{analysis_summary}" if analysis_summary else ""

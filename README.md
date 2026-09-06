@@ -14,8 +14,9 @@ backed analysis results.
 - Extracts claims, offers, monetization hypotheses, CTAs, promises, and
   reproducibility information into typed schemas (Pydantic).
 - Fact-checks claims against web sources (Exa) with QA controls.
-- Applies content scoring and publish-threshold prioritization
-  (`app/worker/prioritization.py`).
+- Routes content, scores five priority signals, and applies one deterministic
+  Router + Prioritization policy before expensive optional analysis and
+  publication (`app/worker/priority_policy.py`).
 
 ## Architecture
 
@@ -56,6 +57,8 @@ Gemini, Exa, Telegram, PostgreSQL, or Redis. Integration tests are opt-in.
 Production builds and deploys must use `scripts/release.ps1`; it refuses a
 dirty Git tree and bakes the exact Git SHA into OCI labels and runtime logs.
 See `docs/RELEASE_OPERATIONS.md` for backup, restore and provenance commands.
+The score bands, risk floors, failure fallback and persisted policy payload are
+documented in `docs/PRIORITIZATION_POLICY.md`.
 
 ## Limitations / notes
 

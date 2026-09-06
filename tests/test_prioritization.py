@@ -199,6 +199,12 @@ async def test_score_content_rejects_out_of_range_score(monkeypatch):
         await score_content("transcript text")
 
 
+@pytest.mark.asyncio
+async def test_score_content_rejects_missing_transcript():
+    with pytest.raises(ValueError, match="non-empty transcript"):
+        await score_content("   ")
+
+
 # --- _parse_json_response ---
 
 
