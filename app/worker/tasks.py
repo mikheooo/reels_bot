@@ -5,7 +5,9 @@ import random
 import re
 import shutil
 import time
+import traceback
 import uuid
+from datetime import datetime, timedelta
 
 import google.generativeai as genai
 import googleapiclient.http
@@ -54,6 +56,11 @@ async def update_job_status(job_id: str, status: str, **kwargs):
         job = await session.get(Job, job_id)
         if job:
             job.status = status
+            # The reaper needs the moment processing actually began — created_at
+            # is when the row was inserted, which can be hours earlier when the
+            # job sat in QUEUED behind others.
+            if status == 'PROCESSING':
+                job.started_at = datetime.utcnow()
             for k, v in kwargs.items():
                 setattr(job, k, v)
             await session.commit()
@@ -234,7 +241,7 @@ async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: fl
     if not pool:
         raise RuntimeError("No GEMINI_API_KEY set")
 
-    model = "gemini-3.7-flash"
+    model = settings.gemini_model
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     extraction_prompt = "Сделай полную подробную транскрипцию всего, что говорят в этом видео. Верни только текст транскрипта аудио, без описания визуального контента."
 
@@ -385,6 +392,23 @@ def format_analysis_markdown(analysis: VideoAnalysis, mechanics_text: str) -> st
         parts.append(f"\nЗАДАЧА:\n{analysis.task_description}")
 
     return "\n\n".join(parts)
+
+def format_error_text(e: BaseException, limit: int = 1500) -> str:
+    """Never let a job land in ERROR with an empty or useless reason.
+
+    Some exceptions stringify to "" (bare `raise Exception()`, several httpx /
+    aiohttp edge cases). That is how rows ended up with a status and no cause —
+    there is literally nothing to debug. Always keep the exception type, and
+    attach a traceback when the message itself says nothing.
+    """
+    msg = str(e).strip()
+    head = f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+    if not msg:
+        tb = traceback.format_exc().strip()
+        if tb:
+            head = f"{head}\n{tb}"
+    return head[:limit]
+
 
 def _split_text(text: str, limit: int = 4096) -> list[str]:
     """Split long text into chunks under Telegram's message limit."""
@@ -683,6 +707,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         return
 
     await update_job_status(job_id, 'PROCESSING')
+    started_monotonic = time.monotonic()
     tmp_dir = f"/tmp/reels_bot/{job_id}"
     os.makedirs(tmp_dir, exist_ok=True)
     video_path = f"{tmp_dir}/video.mp4"
@@ -849,7 +874,6 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             except Exception as e:
                 logger.error(f"Channel publish failed: {e}")
 
-        from datetime import datetime, timedelta
         qa_reasons_data = {
             "analysis_json": analysis_obj.model_dump(),
             "mechanics_text": "### 📝 ДОСТУПНЫЙ МАТЕРИАЛ ВИДЕО\n" + raw_video_text[:1000] + "...",
@@ -888,9 +912,25 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
 
         logger.info(f"Job {job_id} completed successfully.")
         
+    except asyncio.CancelledError:
+        # ARQ cancels this coroutine when job_timeout is reached (or the worker
+        # shuts down). CancelledError is a BaseException since 3.8, so
+        # `except Exception` never sees it — which is exactly how jobs used to
+        # freeze in PROCESSING forever: no status, no reason, no message to the
+        # user, and the reaper had to clean up after the fact.
+        reason = (
+            "Job cancelled before completion (ARQ job_timeout or worker "
+            f"shutdown) after {time.monotonic() - started_monotonic:.0f}s"
+        )
+        logger.error(f"Job {job_id} CANCELLED: {reason}")
+        try:
+            await update_job_status(job_id, 'ERROR', error_text=reason)
+        except Exception as write_err:
+            logger.error(f"Job {job_id}: could not persist cancellation reason: {write_err}")
+        raise
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
-        await update_job_status(job_id, 'ERROR', error_text=str(e))
+        await update_job_status(job_id, 'ERROR', error_text=format_error_text(e))
         bot = Bot(token=settings.bot_token)
         try:
             await bot.send_message(chat_id=user_id, text=f"Произошла ошибка при обработке видео: {e}")

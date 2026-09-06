@@ -22,6 +22,10 @@ class Job(Base):
     tg_file_id = Column(String, nullable=True)
     analysis_text = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    # Set to now() when the job moves to PROCESSING. The reaper needs it:
+    # created_at alone is unsafe, because a job can sit in QUEUED for hours
+    # behind other jobs before it ever starts.
+    started_at = Column(DateTime, nullable=True)
     tg_channel_message_id = Column(BigInteger, nullable=True)
     tg_user_message_id = Column(BigInteger, nullable=True)
     qa_reasons = Column(JSON, nullable=True)
