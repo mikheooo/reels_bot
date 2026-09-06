@@ -592,3 +592,17 @@ def test_legacy_telegram_behavior_not_bypassing_output_variant():
     assert "⚖️ **Вердикт:**" in delivery_text
     assert "Уровень риска:" in delivery_text
 
+
+def test_build_canonical_content_result_accepts_video_url():
+    """Verify build_canonical_content_result accepts video_url and preserves it."""
+    url = "https://www.instagram.com/reel/C7xyz123/"
+    canonical = build_canonical_content_result(
+        route=_dummy_route(),
+        priority=_dummy_priority(),
+        language_context=_dummy_lang(),
+        specialized=_dummy_specialized(),
+        title="Тест URL",
+        video_url=url,
+    )
+    assert canonical.video_url == url
+

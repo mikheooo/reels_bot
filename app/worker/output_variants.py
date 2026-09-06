@@ -168,6 +168,7 @@ class CanonicalContentResult(BaseModel):
     priority_score: float = 0.5
     priority_reasons: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
+    video_url: str | None = None
 
 
 def build_canonical_content_result(
@@ -178,6 +179,7 @@ def build_canonical_content_result(
     analysis: VideoAnalysis | None = None,
     raw_transcript: str = "",
     title: str | None = None,
+    video_url: str | None = None,
 ) -> CanonicalContentResult:
     """Deterministically compose the canonical verified result without re-interpreting transcript."""
     # 1. Title & Topic
@@ -301,6 +303,7 @@ def build_canonical_content_result(
         priority_score=score,
         priority_reasons=reasons,
         citations=citations,
+        video_url=video_url,
     )
 
 
