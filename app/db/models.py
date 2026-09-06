@@ -30,6 +30,10 @@ class Job(Base):
     tg_user_message_id = Column(BigInteger, nullable=True)
     qa_reasons = Column(JSON, nullable=True)
     audit_scheduled_at = Column(DateTime, nullable=True)
+    # Progress UX: single Telegram status message edited by the worker.
+    # Both nullable so old rows keep working (no progress shown for them).
+    tg_progress_chat_id = Column(BigInteger, nullable=True)
+    tg_progress_message_id = Column(BigInteger, nullable=True)
 
 class Task(Base):
     __tablename__ = "tasks"

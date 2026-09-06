@@ -26,6 +26,9 @@ async def apply_migrations(engine) -> None:
             # Reaper support: create_all() never adds columns to an existing
             # table, so the column has to come from here on a live database.
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITHOUT TIME ZONE;",
+            # Progress UX: single editable Telegram status message per job.
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tg_progress_chat_id BIGINT;",
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tg_progress_message_id BIGINT;",
             "CREATE INDEX IF NOT EXISTS ix_jobs_tg_channel_message_id ON jobs (tg_channel_message_id);",
             "CREATE INDEX IF NOT EXISTS ix_jobs_audit_scheduled_at ON jobs (audit_scheduled_at);",
             """

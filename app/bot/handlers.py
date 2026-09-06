@@ -214,8 +214,18 @@ async def handle_url(message: types.Message):
         new_job = Job(id=job_id, user_id=message.from_user.id, original_url=url, url_hash=url_hash, status='QUEUED')
         session.add(new_job)
         await session.commit()
-        
+
         redis_pool = await get_redis_pool()
         await redis_pool.enqueue_job('process_video', job_id, cleaned_url, message.from_user.id)
-        
-        await message.answer("Принято в работу! Ждите результат.")
+
+        # Single status message for the whole job; the worker edits it
+        # in place as the pipeline advances. Best-effort: if sending
+        # fails, the job is already queued and analysis proceeds anyway.
+        try:
+            from app.worker.progress import stage_text
+            status_msg = await message.answer(stage_text("QUEUED"))
+            new_job.tg_progress_chat_id = message.chat.id
+            new_job.tg_progress_message_id = status_msg.message_id
+            await session.commit()
+        except Exception:
+            logger.exception(f"Could not send progress message for job {job_id}")

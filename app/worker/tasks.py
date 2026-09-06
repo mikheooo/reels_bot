@@ -29,6 +29,7 @@ from app.worker.factcheck import (
     validate_claims,
 )
 from app.worker.gemini_raw_log import key_alias, log_raw
+from app.worker.progress import set_progress
 from app.worker.schemas import VideoAnalysis
 from app.worker.structured_analysis import generate_structured_analysis
 from app.worker.visual_analysis import extract_visual_evidence
@@ -697,6 +698,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         msg = "⚠️ Ошибка пайплайна: отсутствуют ключи EXA_API_KEY или JINA_API_KEY. Проверка фактов и автоматическая публикация заблокированы."
         logger.error(f"Job {job_id} REVIEW_REQUIRED: {msg}")
         await update_job_status(job_id, 'REVIEW_REQUIRED', error_text=msg)
+        await set_progress(job_id, "REVIEW_REQUIRED")
         bot = Bot(token=settings.bot_token)
         try:
             await bot.send_message(chat_id=user_id, text=msg)
@@ -711,8 +713,9 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
     tmp_dir = f"/tmp/reels_bot/{job_id}"
     os.makedirs(tmp_dir, exist_ok=True)
     video_path = f"{tmp_dir}/video.mp4"
-    
+
     try:
+        await set_progress(job_id, "DOWNLOAD")
         logger.info(f"Downloading {url} for job {job_id}")
         await download_video(url, video_path)
         
@@ -728,6 +731,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         logger.info(f"Analyzing {video_path}")
         
         logger.info(f"Extracting raw transcript for {video_path}")
+        await set_progress(job_id, "TRANSCRIPT")
         raw_video_text = await get_raw_transcript(video_path)
 
         # Extract visual evidence from video frames for structured analysis
@@ -736,6 +740,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         # Restore the Reels Analyzer report contract. The legacy reels_bot
         # formatter below is retained only as a fallback if report generation fails.
         try:
+            await set_progress(job_id, "ANALYSIS")
             structured_analysis = await generate_structured_analysis(raw_video_text, visual_evidence)
             logger.info("Structured Reels Analyzer report generated.")
         except Exception as structured_err:
@@ -743,6 +748,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
             structured_analysis = None
         
         logger.info("Executing Phase 2 Pipeline...")
+        await set_progress(job_id, "VERIFY")
         claims = await extract_claims(raw_video_text)
         search_data = {}
         for c in claims:
@@ -768,12 +774,14 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         
         # Structured report is canonical. Independent Fact Check and Business Check
         # remain separate layers and are appended deterministically.
+        await set_progress(job_id, "FINALIZE")
         analysis = _compose_analysis_output(structured_analysis, analysis_obj, raw_video_text)
 
         if not qa_res.approved:
             msg = "⚠️ Пост заблокирован QA-контроллером.\nПричины:\n- " + "\n- ".join(qa_res.reasons)
             logger.warning(msg)
             await update_job_status(job_id, 'REVIEW_REQUIRED', error_text=msg, qa_reasons=qa_res.reasons)
+            await set_progress(job_id, "REVIEW_REQUIRED")
             bot = Bot(token=settings.bot_token)
             try:
                 await bot.send_message(chat_id=user_id, text=msg)
@@ -890,6 +898,7 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         if channel_msg_id:
             done_kwargs["tg_channel_message_id"] = channel_msg_id
         await update_job_status(job_id, 'DONE', **done_kwargs)
+        await set_progress(job_id, "COMPLETE")
 
         # Сохраняем задачи в базу данных (PostgreSQL)
         try:
@@ -925,12 +934,14 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         logger.error(f"Job {job_id} CANCELLED: {reason}")
         try:
             await update_job_status(job_id, 'ERROR', error_text=reason)
+            await set_progress(job_id, "ERROR")
         except Exception as write_err:
             logger.error(f"Job {job_id}: could not persist cancellation reason: {write_err}")
         raise
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
         await update_job_status(job_id, 'ERROR', error_text=format_error_text(e))
+        await set_progress(job_id, "ERROR")
         bot = Bot(token=settings.bot_token)
         try:
             await bot.send_message(chat_id=user_id, text=f"Произошла ошибка при обработке видео: {e}")
