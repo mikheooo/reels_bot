@@ -130,6 +130,8 @@ class PublicationIntentModel(Base):
     last_error_message = Column(Text, nullable=True)
     provider_post_id = Column(String, nullable=True)
     provider_url = Column(String, nullable=True)
+    plan_id = Column(String, nullable=True, index=True)
+    scheduled_for = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

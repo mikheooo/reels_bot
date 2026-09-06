@@ -200,6 +200,8 @@ class PublicationIntent(BaseModel):
     last_error_message: str | None = None
     provider_post_id: str | None = None
     provider_url: str | None = None
+    plan_id: str | None = None
+    scheduled_for: datetime.datetime | None = None
 
     @classmethod
     def create(
@@ -211,6 +213,8 @@ class PublicationIntent(BaseModel):
         approved_by: int,
         payload_text: str,
         status: PublicationIntentStatus = PublicationIntentStatus.PENDING,
+        plan_id: str | None = None,
+        scheduled_for: datetime.datetime | None = None,
     ) -> PublicationIntent:
         p_hash = compute_payload_hash(payload_text)
         pub_key = f"{package_id}:{target.value}:{variant.value}:{p_hash[:16]}"
@@ -223,6 +227,8 @@ class PublicationIntent(BaseModel):
             payload_hash=p_hash,
             publication_key=pub_key,
             status=status,
+            plan_id=plan_id,
+            scheduled_for=scheduled_for,
         )
 
 
@@ -242,6 +248,7 @@ class ContentPackage(BaseModel):
     approval_state: PackageStatus = PackageStatus.GENERATED
     delivery_records: list[DeliveryRecord] = Field(default_factory=list)
     publication_intents: list[PublicationIntent] = Field(default_factory=list)
+    owner_approval: Any | None = None
 
 
 # Valid lifecycle state transitions map
@@ -445,6 +452,7 @@ def reconcile_package_status(package: ContentPackage) -> PackageStatus:
         TargetDeliveryStatus.SKIPPED_DUPLICATE,
         TargetDeliveryStatus.NOT_RENDERABLE,
         TargetDeliveryStatus.REJECTED,
+        TargetDeliveryStatus.FAILED,
     )
     all_resolved = all(
         t.status in resolved_statuses
@@ -534,6 +542,23 @@ def approve_package(
             TargetPlatform.THREADS.value,
             TargetPlatform.YOUTUBE_COMMUNITY.value,
         ]
+
+    # Exact OwnerApproval binding
+    from app.worker.publication_orchestrator import (
+        OwnerApproval,
+        compute_package_content_hash,
+    )
+
+    approved_platforms = [
+        TargetPlatform(k) for k in target_keys if k in package.distribution_targets
+    ]
+    package.owner_approval = OwnerApproval(
+        package_id=package.package_id,
+        owner_id=user_id,
+        content_hash=compute_package_content_hash(package),
+        target_platforms=approved_platforms,
+        approved_at=now,
+    )
 
     any_updated = False
     for k in target_keys:

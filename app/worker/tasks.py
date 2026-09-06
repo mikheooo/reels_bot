@@ -220,6 +220,8 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                         last_error_message=intent.last_error_message,
                         provider_post_id=intent.provider_post_id,
                         provider_url=intent.provider_url,
+                        plan_id=intent.plan_id,
+                        scheduled_for=_to_naive_utc(intent.scheduled_for),
                         created_at=now_naive,
                         updated_at=now_naive,
                     )
@@ -232,6 +234,8 @@ async def persist_content_package_models(pkg: ContentPackage) -> None:
                     intent_existing.last_error_message = intent.last_error_message
                     intent_existing.provider_post_id = intent.provider_post_id
                     intent_existing.provider_url = intent.provider_url
+                    intent_existing.plan_id = intent.plan_id
+                    intent_existing.scheduled_for = _to_naive_utc(intent.scheduled_for)
             from app.worker.audit_scheduler import register_audit_target_if_eligible
             for record in pkg.delivery_records:
                 target_obj = pkg.distribution_targets.get(record.target.value)
@@ -341,177 +345,38 @@ async def execute_publication_intents(package_id: str) -> bool:
                 next_retry_at=getattr(d_row, "next_retry_at", None),
             ))
 
-    any_attempted = False
-    for intent in pkg_obj.publication_intents:
-        if intent.status not in (PublicationIntentStatus.PENDING, PublicationIntentStatus.DELIVERY_UNKNOWN):
-            continue
+        from app.worker.publication_orchestrator import PublicationOrchestrator
 
-        target_obj = pkg_obj.distribution_targets.get(intent.target.value)
-        if not target_obj:
-            continue
+        any_attempted = False
+        for intent in pkg_obj.publication_intents:
+            if intent.status not in (
+                PublicationIntentStatus.PENDING,
+                PublicationIntentStatus.DELIVERY_UNKNOWN,
+                PublicationIntentStatus.IN_FLIGHT,
+            ):
+                continue
 
-        variants_dict = getattr(pkg_obj.output_variants, "variants", {}) if hasattr(pkg_obj, "output_variants") else {}
-        current_v = variants_dict.get(intent.variant.value)
-        current_text = (current_v.text if current_v else target_obj.rendered_payload) or ""
-        current_hash = compute_payload_hash(current_text)
+            try:
+                connector = ConnectorRegistry.get_connector(intent.target)
+            except Exception as e:
+                logger.error("No connector for target %s: %s", intent.target, e)
+                continue
 
-        if current_hash != intent.payload_hash:
-            logger.warning(
-                "STALE APPROVAL: Variant %s in package %s has hash %s != approved %s",
-                intent.variant.value, package_id, current_hash[:16], intent.payload_hash[:16],
+            await PublicationOrchestrator.execute_intent(
+                intent=intent,
+                package=pkg_obj,
+                connector=connector,
+                session=session,
+                now=now_naive,
             )
-            intent.status = PublicationIntentStatus.APPROVAL_STALE
-            intent.last_error_code = "APPROVAL_STALE"
-            intent.last_error_message = "Variant text modified after owner approval. Re-approval required."
-            target_obj.status = TargetDeliveryStatus.FAILED
-            target_obj.error_code = "APPROVAL_STALE"
-            target_obj.error_message = intent.last_error_message
             any_attempted = True
-            continue
 
-        try:
-            connector = ConnectorRegistry.get_connector(intent.target)
-        except Exception as e:
-            logger.error("No connector for target %s: %s", intent.target, e)
-            continue
+        new_state = reconcile_package_status(pkg_obj)
+        if new_state != pkg_obj.approval_state and new_state in VALID_TRANSITIONS.get(pkg_obj.approval_state, set()):
+            transition_package_status(pkg_obj, new_state, "Publication intents execution completed")
 
-        caps = connector.capabilities()
-        if caps.status.value != "CONNECTED_SUPPORTED":
-            if caps.status.value == "UNSUPPORTED_OFFICIAL_API":
-                intent.status = PublicationIntentStatus.MANUAL_EXPORT_READY
-                target_obj.status = TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH
-            else:
-                intent.status = PublicationIntentStatus.SUPPORTED_NOT_CONFIGURED
-                target_obj.status = TargetDeliveryStatus.SUPPORTED_NOT_CONFIGURED
-            any_attempted = True
-            continue
-
-        intent.attempt_count += 1
-        attempt_id = sum(1 for r in pkg_obj.delivery_records if r.target == intent.target) + 1
-        intent.status = PublicationIntentStatus.IN_FLIGHT
-
-        pub_result = await connector.publish(current_text, intent)
-        any_attempted = True
-
-        if pub_result.success:
-            intent.status = PublicationIntentStatus.SUCCEEDED
-            intent.provider_post_id = pub_result.provider_post_id
-            intent.provider_url = pub_result.provider_url
-            intent.last_error_code = None
-            intent.last_error_message = None
-
-            target_obj.status = TargetDeliveryStatus.DELIVERED
-            target_obj.external_id = pub_result.provider_post_id
-            target_obj.delivered_at = now_naive
-
-            rec = DeliveryRecord.create(
-                package_id=package_id,
-                target=intent.target,
-                variant=intent.variant,
-                attempt_id=attempt_id,
-                approval_state=PackageStatus.APPROVED,
-                status=DeliveryOutcome.SUCCEEDED,
-                external_id=pub_result.provider_post_id,
-                finished_at=now_naive,
-                publication_key=intent.publication_key,
-                payload_hash=intent.payload_hash,
-                provider_post_id=pub_result.provider_post_id,
-                provider_url=pub_result.provider_url,
-                retry_count=intent.attempt_count - 1,
-            )
-            pkg_obj.delivery_records.append(rec)
-
-        elif pub_result.is_ambiguous:
-            intent.status = PublicationIntentStatus.DELIVERY_UNKNOWN
-            intent.last_error_code = pub_result.error_code or "TIMEOUT"
-            intent.last_error_message = pub_result.error_message
-            target_obj.status = TargetDeliveryStatus.DELIVERY_UNKNOWN
-
-            recon = await connector.reconcile_ambiguous_delivery(intent, current_text)
-            if recon.resolved and recon.published:
-                intent.status = PublicationIntentStatus.SUCCEEDED
-                intent.provider_post_id = recon.provider_post_id
-                intent.provider_url = recon.provider_url
-                target_obj.status = TargetDeliveryStatus.DELIVERED
-                target_obj.external_id = recon.provider_post_id
-                target_obj.delivered_at = now_naive
-
-                rec = DeliveryRecord.create(
-                    package_id=package_id,
-                    target=intent.target,
-                    variant=intent.variant,
-                    attempt_id=attempt_id,
-                    approval_state=PackageStatus.APPROVED,
-                    status=DeliveryOutcome.SUCCEEDED,
-                    external_id=recon.provider_post_id,
-                    finished_at=now_naive,
-                    publication_key=intent.publication_key,
-                    payload_hash=intent.payload_hash,
-                    provider_post_id=recon.provider_post_id,
-                    provider_url=recon.provider_url,
-                    retry_count=intent.attempt_count - 1,
-                )
-                pkg_obj.delivery_records.append(rec)
-            else:
-                rec = DeliveryRecord.create(
-                    package_id=package_id,
-                    target=intent.target,
-                    variant=intent.variant,
-                    attempt_id=attempt_id,
-                    approval_state=PackageStatus.APPROVED,
-                    status=DeliveryOutcome.RETRYABLE_ERROR if pub_result.is_retryable else DeliveryOutcome.FAILED,
-                    error_code=pub_result.error_code,
-                    error_message=sanitize_sensitive_text(pub_result.error_message or ""),
-                    finished_at=now_naive,
-                    publication_key=intent.publication_key,
-                    payload_hash=intent.payload_hash,
-                    retry_count=intent.attempt_count - 1,
-                )
-                pkg_obj.delivery_records.append(rec)
-
-        else:
-            intent.last_error_code = pub_result.error_code
-            intent.last_error_message = sanitize_sensitive_text(pub_result.error_message or "")
-
-            if pub_result.is_retryable and intent.attempt_count < settings.publish_max_retries:
-                intent.status = PublicationIntentStatus.PENDING
-                if pub_result.retry_after_seconds and pub_result.retry_after_seconds > 0:
-                    delay_sec = pub_result.retry_after_seconds
-                else:
-                    backoff_idx = min(intent.attempt_count - 1, len(settings.publish_retry_backoff_seconds) - 1)
-                    delay_sec = settings.publish_retry_backoff_seconds[backoff_idx]
-                intent.next_retry_at = now_naive + dt_module.timedelta(seconds=delay_sec)
-                outcome = DeliveryOutcome.RETRYABLE_ERROR
-            else:
-                intent.status = PublicationIntentStatus.FAILED
-                target_obj.status = TargetDeliveryStatus.FAILED
-                target_obj.error_code = pub_result.error_code
-                target_obj.error_message = intent.last_error_message
-                outcome = DeliveryOutcome.FAILED
-
-            rec = DeliveryRecord.create(
-                package_id=package_id,
-                target=intent.target,
-                variant=intent.variant,
-                attempt_id=attempt_id,
-                approval_state=PackageStatus.APPROVED,
-                status=outcome,
-                error_code=pub_result.error_code,
-                error_message=intent.last_error_message,
-                finished_at=now_naive,
-                publication_key=intent.publication_key,
-                payload_hash=intent.payload_hash,
-                retry_count=intent.attempt_count - 1,
-                next_retry_at=intent.next_retry_at,
-            )
-            pkg_obj.delivery_records.append(rec)
-
-    new_state = reconcile_package_status(pkg_obj)
-    if new_state != pkg_obj.approval_state and new_state in VALID_TRANSITIONS.get(pkg_obj.approval_state, set()):
-        transition_package_status(pkg_obj, new_state, "Publication intents execution completed")
-
-    await persist_content_package_models(pkg_obj)
-    return any_attempted
+        await persist_content_package_models(pkg_obj)
+        return any_attempted
 
 
 

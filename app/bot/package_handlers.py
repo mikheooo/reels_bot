@@ -232,6 +232,8 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                     last_error_message=intent.last_error_message,
                     provider_post_id=intent.provider_post_id,
                     provider_url=intent.provider_url,
+                    plan_id=intent.plan_id,
+                    scheduled_for=_to_naive_utc(intent.scheduled_for),
                     created_at=_to_naive_utc(datetime.now(timezone.utc)),
                     updated_at=_to_naive_utc(datetime.now(timezone.utc)),
                 )
