@@ -359,38 +359,99 @@ async def transcribe_with_legacy_gemini(file_path: str, max_rounds: int = 8, bas
     raise last_error or Exception("All API keys failed in get_raw_transcript")
 
 
-async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0) -> str:
-    """Hybrid orchestrator (public entry point, signature unchanged).
+async def get_transcript_with_meta(
+    file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0
+) -> tuple[str, dict]:
+    """Hybrid orchestrator returning (text, meta).
 
-    Primary: Gemini 3.5 Transcribe (verbatim). On failure or suspiciously
-    short output -> fallback: legacy generic-Gemini transcription.
-    Downstream stages see a single `raw/full_transcript` either way.
+    Implements §8-§9 conservative selection and §16 logging.
+    Meta keys: model, fallback_used, status, duration, latency, chars.
     """
     from app.worker.transcribe_35 import (
-        is_transcript_complete,
+        assess_transcript_completeness,
         transcribe_with_gemini_35,
     )
     from app.worker.visual_analysis import get_video_duration
+
+    if not getattr(settings, "transcription_primary_enabled", True):
+        t0 = time.monotonic()
+        text = await transcribe_with_legacy_gemini(file_path, max_rounds, base_delay, cap_delay)
+        try:
+            duration = await get_video_duration(file_path)
+        except Exception:
+            duration = 0.0
+        meta = {
+            "model": getattr(settings, "transcription_fallback_model", "legacy"),
+            "fallback_used": "flag_off",
+            "status": "OK",
+            "duration": duration,
+            "latency": time.monotonic() - t0,
+            "chars": len(text or ""),
+        }
+        logger.info(f"Transcription flag OFF -> legacy ({meta['chars']} chars)")
+        return text, meta
 
     try:
         duration = await get_video_duration(file_path)
     except Exception:
         duration = 0.0
+
+    t0 = time.monotonic()
     try:
         pool, _, _ = _gemini_key_pool()
         text = await transcribe_with_gemini_35(
             file_path, pool, tmp_dir=os.path.dirname(file_path) or "/tmp"
         )
-        if is_transcript_complete(text, duration):
-            logger.info(f"3.5 Transcribe primary succeeded ({len(text)} chars).")
-            return text
-        logger.warning(
-            f"3.5 Transcribe output suspiciously short ({len(text)} chars, "
-            f"{duration:.0f}s audio): falling back to legacy transcription."
-        )
+        status = assess_transcript_completeness(text, duration)
+        latency = time.monotonic() - t0
+        if status == "FAILED":
+            logger.warning(f"3.5 Transcribe FAILED ({len(text)} chars, {duration:.0f}s): fallback")
+            fb_text = await transcribe_with_legacy_gemini(file_path, max_rounds, base_delay, cap_delay)
+            meta = {"model": settings.transcription_primary_model, "fallback_used": "primary_failed",
+                    "status": "FAILED", "duration": duration, "latency": latency, "chars": len(fb_text)}
+            logger.info(f"Transcription fallback used ({len(fb_text)} chars, reason=FAILED)")
+            return fb_text, meta
+        if status == "SUSPICIOUS":
+            logger.warning(f"3.5 SUSPICIOUS ({len(text)} chars, {duration:.0f}s): trying fallback for comparison")
+            try:
+                fb_text = await transcribe_with_legacy_gemini(file_path, max_rounds, base_delay, cap_delay)
+                # conservative: keep primary unless fallback is dramatically longer (>1.8x) and fallback is OK
+                fb_status = assess_transcript_completeness(fb_text, duration)
+                if fb_status == "OK" and len(fb_text) > len(text) * 1.8:
+                    meta = {"model": settings.transcription_primary_model, "fallback_used": "suspicious_overridden",
+                            "status": "SUSPICIOUS", "duration": duration, "latency": latency, "chars": len(fb_text)}
+                    logger.warning(f"SUSPICIOUS overridden by fallback ({len(text)} -> {len(fb_text)})")
+                    return fb_text, meta
+                meta = {"model": settings.transcription_primary_model, "fallback_used": "none",
+                        "status": "SUSPICIOUS", "duration": duration, "latency": latency, "chars": len(text)}
+                logger.info(f"3.5 SUSPICIOUS kept primary ({len(text)} chars) with warning")
+                return text, meta
+            except Exception as fb_e:
+                logger.warning(f"SUSPICIOUS fallback also failed: {fb_e}, keeping primary")
+                meta = {"model": settings.transcription_primary_model, "fallback_used": "none",
+                        "status": "SUSPICIOUS", "duration": duration, "latency": latency, "chars": len(text)}
+                return text, meta
+        meta = {"model": settings.transcription_primary_model, "fallback_used": "none",
+                "status": "OK", "duration": duration, "latency": latency, "chars": len(text)}
+        logger.info(f"3.5 Transcribe OK ({len(text)} chars, {latency:.1f}s, {duration:.0f}s audio)")
+        return text, meta
     except Exception as e:
         logger.warning(f"3.5 Transcribe primary failed, falling back: {e}")
-    return await transcribe_with_legacy_gemini(file_path, max_rounds, base_delay, cap_delay)
+    fb_text = await transcribe_with_legacy_gemini(file_path, max_rounds, base_delay, cap_delay)
+    meta = {"model": settings.transcription_fallback_model if hasattr(settings, "transcription_fallback_model") else "legacy",
+            "fallback_used": "primary_exception", "status": "FALLBACK", "duration": duration,
+            "latency": time.monotonic() - t0, "chars": len(fb_text)}
+    logger.info(f"Fallback transcription used ({len(fb_text)} chars)")
+    return fb_text, meta
+
+
+async def get_raw_transcript(file_path: str, max_rounds: int = 8, base_delay: float = 3.0, cap_delay: float = 120.0) -> str:
+    """Legacy entry point, kept for backward compatibility (tests & callers).
+
+    Delegates to get_transcript_with_meta and returns only the text.
+    """
+    text, _meta = await get_transcript_with_meta(file_path, max_rounds, base_delay, cap_delay)
+    return text
 
 
 def _format_independent_analysis_layers(analysis: VideoAnalysis) -> str:
@@ -773,11 +834,17 @@ async def process_video(ctx, job_id: str, url: str, user_id: int):
         
         logger.info(f"Extracting raw transcript for {video_path}")
         await set_progress(job_id, "TRANSCRIPT")
-        raw_video_text = await get_raw_transcript(video_path)
+        raw_video_text, tmeta = await get_transcript_with_meta(video_path)
         # Canonical artifact: persist immediately, before structured analysis,
         # fact-check and report composition. Downstream stages must never
         # overwrite it; a later ERROR/REVIEW keeps the transcript available.
-        await update_job_status(job_id, 'PROCESSING', full_transcript=raw_video_text)
+        await update_job_status(
+            job_id, 'PROCESSING',
+            full_transcript=raw_video_text,
+            transcription_model=tmeta.get("model"),
+            transcription_fallback_used=tmeta.get("fallback_used"),
+            transcription_status=tmeta.get("status"),
+        )
 
         # Extract visual evidence from video frames for structured analysis
         visual_evidence = await extract_visual_evidence(video_path)

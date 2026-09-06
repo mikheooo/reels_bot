@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     # Override via GEMINI_MODEL in .env to switch models without touching code.
     gemini_model: str = "gemini-3.7-flash"
 
+    # Dedicated transcription configuration (never reuses GEMINI_MODEL).
+    transcription_primary_model: str = "gemini-3.5-transcribe"
+    transcription_fallback_model: str = "gemini-3.7-flash"
+    transcription_primary_enabled: bool = True
+    transcription_min_chars_per_min: int = 400
+
     class Config:
         env_file = ".env"
         extra = "allow"

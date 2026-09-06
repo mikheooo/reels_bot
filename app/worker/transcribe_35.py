@@ -19,6 +19,8 @@ Separation of concerns:
 import asyncio
 import logging
 import os
+import random
+import re
 
 import httpx
 
@@ -31,13 +33,7 @@ VERBATIM_PROMPT = (
     "repetition and false start. Do not summarize."
 )
 
-# Below ~400 chars per minute of audio the transcript is almost certainly
-# truncated or empty for speech content. Music-only videos may legitimately
-# fall below — the fallback path then still returns *something*.
 MIN_CHARS_PER_MINUTE = 400
-
-# Paid-tier quota observed: 10k input tokens/min for this model
-# (~5 min of audio per minute). Pacing between key attempts.
 RETRY_SLEEP_SECONDS = 45
 GEN_TIMEOUT = 600.0
 
@@ -55,14 +51,33 @@ async def extract_audio_mp3(video_path: str, mp3_path: str) -> None:
         raise RuntimeError(f"ffmpeg audio extraction failed: {stderr.decode()[:300]}")
 
 
-def is_transcript_complete(text: str, duration_s: float) -> bool:
-    """Heuristic completeness gate. Returns False when suspiciously short."""
+def assess_transcript_completeness(text: str, duration_s: float) -> str:
+    """Return OK / SUSPICIOUS / FAILED.
+
+    FAILED  = empty / whitespace / clearly malformed.
+    SUSPICIOUS = unusually short for the audio duration or abruptly cut.
+    OK = no sign of a problem.  Duration 0 (unknown) trusts non-empty text.
+    """
     if not text or not text.strip():
-        return False
+        return "FAILED"
+    stripped = text.strip()
+    if len(stripped) < 5:
+        return "FAILED"
     if not duration_s or duration_s <= 0:
-        return True  # unknown duration: trust the model output
+        return "OK"  # unknown duration: trust non-empty
     expected_min = MIN_CHARS_PER_MINUTE * (duration_s / 60.0)
-    return len(text) >= expected_min
+    if len(stripped) < expected_min * 0.6:
+        return "SUSPICIOUS" if len(stripped) >= 20 else "FAILED"
+    if not re.search(r"[.!?\"»…)\]]\s*$", stripped) and len(stripped) < expected_min:
+        return "SUSPICIOUS"
+    if len(stripped) < 20:
+        return "FAILED"
+    return "OK"
+
+
+def is_transcript_complete(text: str, duration_s: float) -> bool:
+    """Legacy boolean gate: True only on OK (strict, for old callers)."""
+    return assess_transcript_completeness(text, duration_s) == "OK"
 
 
 def extract_transcription_text(data: dict) -> str:
@@ -81,6 +96,19 @@ def _transcribe_url(model: str) -> str:
     return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
+def _retry_delay(resp: httpx.Response | None, attempt: int) -> float:
+    """Honour Retry-After if present, else exponential backoff + jitter, bounded."""
+    if resp is not None:
+        ra = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+        if ra:
+            try:
+                return min(float(ra.strip().split()[0]), 120.0)
+            except Exception:
+                pass
+    base = RETRY_SLEEP_SECONDS * (1.5 ** attempt)
+    return min(base + random.uniform(0, 10), 120.0)
+
+
 async def transcribe_with_gemini_35(
     video_path: str,
     api_keys: list[str],
@@ -93,7 +121,7 @@ async def transcribe_with_gemini_35(
     await extract_audio_mp3(video_path, mp3_path)
     last_error: Exception | None = None
     try:
-        for key in api_keys:
+        for idx, key in enumerate(api_keys):
             if not key:
                 continue
             genai.configure(api_key=key, transport="rest")
@@ -124,17 +152,19 @@ async def transcribe_with_gemini_35(
                     last_error = RuntimeError("3.5 Transcribe returned empty text")
                     continue
                 if resp.status_code in (429, 500, 502, 503, 504):
-                    logger.warning("3.5 Transcribe busy/rate-limited, next key.")
+                    delay = _retry_delay(resp, idx)
+                    logger.warning(f"3.5 Transcribe {resp.status_code}, retry in {delay:.0f}s, next key.")
                     last_error = RuntimeError(f"3.5 HTTP {resp.status_code}")
-                    await asyncio.sleep(RETRY_SLEEP_SECONDS)
+                    await asyncio.sleep(delay)
                     continue
                 raise RuntimeError(f"3.5 HTTP {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
                 last_error = e
                 msg = str(e).lower()
                 if "429" in msg or "quota" in msg or "503" in msg or "unavailable" in msg:
-                    logger.warning(f"3.5 Transcribe busy/rate-limited, next key: {e}")
-                    await asyncio.sleep(RETRY_SLEEP_SECONDS)
+                    delay = RETRY_SLEEP_SECONDS + random.uniform(0, 10)
+                    logger.warning(f"3.5 Transcribe busy/rate-limited, next key in {delay:.0f}s: {e}")
+                    await asyncio.sleep(delay)
                     continue
                 logger.warning(f"3.5 Transcribe attempt failed: {e}")
                 continue

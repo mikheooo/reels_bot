@@ -38,6 +38,9 @@ class Job(Base):
     # transcription succeeds, never overwritten by downstream stages.
     # TEXT = no character limit. NULL for jobs processed before this feature.
     full_transcript = Column(Text, nullable=True)
+    transcription_model = Column(String, nullable=True)
+    transcription_fallback_used = Column(String, nullable=True)
+    transcription_status = Column(String, nullable=True)
 
 class Task(Base):
     __tablename__ = "tasks"
