@@ -10,7 +10,10 @@ Stage: **Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE (
 - Production release SHA: `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
 - Release commit: `7bb6239` — feat(outcome): implement outcome learning dataset and shadow calibration v1.
 - Previous accepted baseline: `77264f6d6f60218daa39528f7a7663f52e307e47` (documentation HEAD `99a112d44aab057534c8b3c7b0e79a2fc6b06d68`).
+- Documentation baseline: `ebc657a3a0efd64a8ee0b779b4151dcad99b5d5e` (docs: record Outcome Learning Dataset & Prioritization Calibration v1 stage completion).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
+- Hosted CI verification:
+  - Runtime commit `7bb62396d962551b1cb3cc78d60331d23f00c5b6`: CI run `34062711864` -> **SUCCESS** (45s, 371 passed, 1 skipped, 7 deselected, 0 failed, 379 collected).
 - Production image tag: `reels_bot:7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
 - Running image digest: `sha256:8115853f1e7ec473954943a9c56f0bbddd7009e102f3684b1986d0524267bbd1`.
 - Image build timestamp: `2026-09-06T20:04:44Z`.
@@ -70,10 +73,12 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 ## Automated test coverage
 
 - Canonical Clean Git Archive / Hosted CI pytest run:
-  - `372 collected`
-  - `372 passed`
+  - `379 collected`
+  - `371 passed` (hosted clean checkout without local gitignored media fixture) / `372 passed` (clean archive with local media fixture)
+  - `1 skipped` (media test honestly skipped in clean checkout where gitignored test video is absent)
   - `7 deselected`
   - `0 failed`
+  - Canonical invariant: `371 passed + 1 skipped + 7 deselected = 379 collected` (hosted CI); `372 passed + 0 skipped + 7 deselected = 379 collected` (local clean archive).
 - Replay evaluation suites (all 8 passing at 1.0, 131 tests passed):
   - **Outcome Learning Replay**: **14 deterministic scenarios** (`tests/fixtures/outcome_learning_eval.json`); zero cross-horizon pooling: `0`, zero fake zero denominators: `0`, data sufficiency enforced: `True`, outlier isolation: `True`, zero automatic policy mutations: `0`, immutable safety floor preserved: `True`, lineage integrity: `True`, all 7 gates passed: `True`.
   - **Audit Replay**: **13 deterministic scenarios** (`tests/fixtures/audit_eval.json`); `auth_mistaken_for_deletion`: `0`, `duplicate_snapshots`: `0`, `unsupported_fake_verification`: `0`, `overdue_pollution_for_unavailable_connectors`: `0`, all gates passed: `True`.
@@ -101,7 +106,13 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 - Outcome Learning & Shadow Calibration:
   - Database schema initialized: `outcome_observations` and `calibration_runs` tables verified.
   - Unique constraint `uq_outcome_observations_pub_horizon` enforced.
+  - Production OutcomeObservation count: `0` (truthful, unsimulated).
+  - Production CalibrationRun count: `0`.
+  - Calibration readiness in production: `INSUFFICIENT_DATA`.
   - Shadow Calibration mode confirmed: 0 automatic mutations to production thresholds (`publish=0.6`, `deprioritize=0.4`) or Router policies.
+  - Recommendations generated in production: `0` (shadow replay evaluation generated `2`).
+  - Recommendations applied: `0`.
+  - Automatic policy mutations: `0`.
   - Zero overdue audit records created (`AUDIT_TARGETS_COUNT = 0`).
   - Redis queue depth: `0`.
   - Legacy isolation: historical rows remain undisturbed.
