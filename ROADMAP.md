@@ -15,9 +15,8 @@ for X, Threads, YouTube Community), and Post-Publish Audit & Telemetry v2 (decay
 monitoring, observational Telegram edit telemetry, and strict occurrence idempotency) are
 verified and complete.
 
-Current stage is **Priority 4: Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE**
-operating exclusively in **Observation / Shadow Calibration Mode** without automatic mutation
-of production policies or thresholds. Next stage is Priority 5 (not started).
+Current stage is **Priority 5: Automatic Publication — Publication Orchestrator Core & Controlled X API v2 Connector Path — COMPLETE**.
+The pipeline implements the unified `PublicationOrchestrator`, exact `OwnerApproval` binding, a 9-state publication state machine, crash consistency boundaries A-E, per-platform isolation, deterministic idempotency, and an offline replay suite with 7 safety gates. Autonomous publishing without approval remains prohibited.
 
 ## PRIORITY 1: Мультиязычный анализ — COMPLETE
 **Цель:** Научить пайплайн автоматически определять язык ролика и корректно работать с английским, русским, тайским, испанским, китайским, японским.
@@ -49,8 +48,9 @@ immutable safety floor preservation, and offline evaluation suite implemented.
 **Цель:** После публикации автоматически собирать: просмотры, CTR, удержание, лайки, комментарии, репосты. Использовать для улучшения выбора тем и стиля публикаций.
 **Scope v1 (COMPLETE):** Typed OutcomeObservation contracts, fixed horizons (15m, 2h, 12h, 24h, 3d, 7d), platform-specific normalization without fake zeros, data quality taxonomy, data sufficiency policies, outlier guards, shadow calibration engine, and offline replay suite without automatic production policy mutation.
 
-## PRIORITY 5: Автоматическая публикация
+## PRIORITY 5: Автоматическая публикация — IN PROGRESS (Core Orchestrator & X API v2 Slice COMPLETE)
 **Цель:** После подтверждения автоматически публиковать в Telegram, YouTube Shorts, Instagram, TikTok, X, Threads (Единый пайплайн).
+**Slice 1 Baseline (2026-09-07):** Publication Orchestrator Core (`PublicationOrchestrator`), `OwnerApproval` cryptographic binding, 9-state publication state machine, crash consistency across Boundaries A-E, per-platform isolation, deterministic idempotency (`publication_key` & `attempt_key`), X API v2 controlled connector validation, and deterministic evaluation replay suite (15 scenarios, 7 safety gates). Zero autonomous publishing without owner approval.
 
 ## PRIORITY 6: Самообучающийся фактчекинг
 **Цель:** Если Post-Publish Audit регулярно находит ошибки: определить причину, понять где ошиблась модель, автоматически улучшать промпты, снижать количество ложных подтверждений.

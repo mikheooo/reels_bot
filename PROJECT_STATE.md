@@ -1,8 +1,8 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 04:20 ICT
+Snapshot: 2026-09-07 05:25 ICT
 
-Stage: **Telegram Analysis UX Cleanup v1 — COMPLETE**
+Stage: **Automatic Publication — Publication Orchestrator Core & Controlled X API v2 Slice — COMPLETE**
 
 ## Release identity
 
@@ -102,14 +102,50 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
      7. Lineage integrity (`gate_7_lineage_integrity = True`)
    - All 7 gates passed (`all_gates_passed = True`).
 
+## Publication Orchestrator Core & Controlled X API v2 Slice Architecture
+
+This stage implements ROADMAP Priority 5: Publication Orchestrator Core + Controlled X API v2 Connector Path:
+
+1. **Publication State Machine**:
+   - `PublicationState` enum explicitly differentiates terminal from intermediate states: `PENDING_APPROVAL`, `APPROVED`, `READY`, `ATTEMPTING`, `PUBLISHED`, `RETRYABLE_FAILURE`, `AMBIGUOUS`, `PERMANENT_FAILURE`, `CANCELLED`.
+   - Transitions are centralized and validated in `PublicationOrchestrator`.
+
+2. **Exact Approval Binding (`OwnerApproval`)**:
+   - Cryptographically bound to: `package_id`, `owner_id`, `content_hash` (`compute_package_content_hash`), `target_platforms`, and `approved_at`.
+   - Staleness Invariant: Content changes after approval trigger `APPROVAL_STALE` and block publication.
+   - Zero autonomous publishing: packages in `GENERATED`, `REVIEW_REQUIRED`, `DELIVERY_PENDING`, or Telegram delivery states are never implicitly approved.
+
+3. **Crash Consistency Model (5 Boundaries)**:
+   - **Boundary A (Pre-dispatch)**: Marked `IN_FLIGHT` before network call.
+   - **Boundary B (Timeout / Disconnect)**: Marked `DELIVERY_UNKNOWN`, immediately reconciled via `connector.reconcile_ambiguous_delivery`.
+   - **Boundary C (External Success + Local Crash)**: Recovery inspects provider timeline lookup before reissue; marks `SUCCEEDED` without duplicate POST.
+   - **Boundary D (Committed Success Replay)**: Already `SUCCEEDED` returns `ALREADY_PUBLISHED` no-op.
+   - **Boundary E (Retry after Ambiguity)**: Reconciliation confirms post absence before scheduling retry.
+
+4. **Per-Platform Isolation**:
+   - Success on Platform A (X) is preserved if Platform B (Threads) fails.
+   - Re-running publication only executes failed/pending targets, never re-attempting succeeded ones.
+
+5. **Durable Idempotency Keys**:
+   - `publication_key`: `{package_id}:{target}:{variant}:{payload_hash[:16]}`.
+   - `attempt_key`: `{publication_key}:attempt_{attempt_id}`.
+
+6. **Additive Schema Migrations**:
+   - `publication_intents.plan_id VARCHAR` and `publication_intents.scheduled_for TIMESTAMP WITHOUT TIME ZONE` with index `ix_publication_intents_plan_id`.
+
+7. **Replay Harness & 7 Mandatory Gates**:
+   - Evaluates 15 deterministic scenarios (`tests/fixtures/publication_eval.json`).
+   - All 7 mandatory safety gates passed: zero unauthorized publications, zero duplicate publications, zero stale approval publications, zero blind reposts, platform isolation preserved, terminal state correctness 1.0, zero credential leaks.
+
 ## Automated test coverage
 
-- Canonical Clean Git Archive / Hosted CI pytest run:
-  - `391 collected`
-  - `384 passed`
+- Canonical Non-Integration Pytest run:
+  - `415 collected`
+  - `408 passed`
   - `7 deselected`
   - `0 failed`
-- Replay evaluation suites (all 8 passing at 1.0, 131 tests passed):
+- Replay evaluation suites (all 9 passing at 1.0, 147 tests passed):
+  - **Publication Replay**: **15 deterministic scenarios** (`tests/fixtures/publication_eval.json`); unauthorized publications: `0`, duplicate publications: `0`, stale approval publications: `0`, blind reposts: `0`, platform isolation preserved: `True`, terminal state correctness: `1.0`, credential leaks: `0`, all 7 gates passed: `True`.
   - **Outcome Learning Replay**: **14 deterministic scenarios** (`tests/fixtures/outcome_learning_eval.json`); zero cross-horizon pooling: `0`, zero fake zero denominators: `0`, data sufficiency enforced: `True`, outlier isolation: `True`, zero automatic policy mutations: `0`, immutable safety floor preserved: `True`, lineage integrity: `True`, all 7 gates passed: `True`.
   - **Audit Replay**: **13 deterministic scenarios** (`tests/fixtures/audit_eval.json`); `auth_mistaken_for_deletion`: `0`, `duplicate_snapshots`: `0`, `unsupported_fake_verification`: `0`, `overdue_pollution_for_unavailable_connectors`: `0`, all gates passed: `True`.
   - **Connector Replay**: **13 deterministic scenarios** (`tests/fixtures/connector_eval.json`); unauthorized publications: `0`, duplicate logical publications: `0`, stale approvals published: `0`, fake successes: `0`, retry correctness: `1.0`, all gates passed: `True`.

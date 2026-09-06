@@ -191,3 +191,61 @@ class PublicationIntent(BaseModel):
 1. **Zero Secret Logging**: All connector logs and exception handlers pipe messages through `sanitize_sensitive_text()`. Authorization headers, Bearer tokens, OAuth signature strings, and client secrets are stripped via regex before logging.
 2. **Environment Isolation**: API credentials reside exclusively in environment variables (`.env`), never checked into Git.
 3. **Telegram Owner Verification**: Callback handlers verify `callback.from_user.id == job.user_id` on every approval action.
+
+---
+
+## Publication Orchestrator Core (ROADMAP Priority 5)
+
+The **Publication Orchestrator Core** (`app/worker/publication_orchestrator.py`) provides the production-grade orchestration engine that safely converts owner approval into verified external publications.
+
+### 1. Publication State Machine
+
+The state machine explicitly differentiates terminal from intermediate states:
+
+- `PENDING_APPROVAL`: Content package is generated; awaiting owner review.
+- `APPROVED`: Owner approval cryptographically verified and bound; plan created.
+- `READY`: Connector credentials verified, no active rate limits, eligible for worker dispatch.
+- `ATTEMPTING`: Network request in-flight to external provider endpoint.
+- `PUBLISHED`: Confirmed published with verified external post ID and canonical URL.
+- `RETRYABLE_FAILURE`: Transient transport failure or 429 rate limit with scheduled backoff timestamp (`next_retry_at`).
+- `AMBIGUOUS`: Network timeout or disconnection; requires reconciliation lookup before retry.
+- `PERMANENT_FAILURE`: Terminal rejection (auth error 401/403, character limit breach, stale approval, or max retries exceeded).
+- `CANCELLED`: Explicitly revoked by owner or system.
+
+### 2. Exact Approval Binding (`OwnerApproval`)
+
+No external publication can proceed without a cryptographically bound `OwnerApproval`:
+- `approval_id`: Unique UUID.
+- `package_id`: Immutable link to the target `ContentPackage`.
+- `owner_id`: Telegram user ID of authorized owner (rejects unauthorized approvals).
+- `content_hash`: Deterministic SHA-256 hash binding all rendered variant payloads (`compute_package_content_hash`).
+- `target_platforms`: Exact list of approved destination platforms.
+- `approved_at`: UTC timestamp.
+
+**Staleness Invariant**: Any modification to approved variant text or package contents causes a hash mismatch, immediately marking the intent `APPROVAL_STALE` and blocking publication until fresh owner approval is granted.
+
+### 3. Crash Consistency Boundaries
+
+The orchestrator explicitly handles 5 crash boundaries:
+
+- **Boundary A (Pre-dispatch Crash)**: Intent is marked `IN_FLIGHT` (`ATTEMPTING`) before network dispatch. If worker crashes, recovery checks provider timeline before attempting repost.
+- **Boundary B (In-flight Timeout)**: Network disconnection or HTTP timeout transitions intent to `DELIVERY_UNKNOWN` (`AMBIGUOUS`). The orchestrator triggers ambiguous reconciliation; never blind-reposts!
+- **Boundary C (External Success + Local Crash)**: Post succeeded on external platform, but local worker died before committing to PostgreSQL. On recovery, `reconcile_ambiguous_delivery` discovers the existing post via timeline snippet/ID lookup and marks `SUCCEEDED` without sending a duplicate `POST`.
+- **Boundary D (Committed Success Replay)**: Already `SUCCEEDED` -> returns immediately with `ALREADY_PUBLISHED` no-op.
+- **Boundary E (Retry after Ambiguity)**: Reconciliation confirms post does not exist before scheduling retry; prevents duplicate posts.
+
+### 4. Per-Platform Isolation
+
+Each target platform maintains an independent lifecycle. If Platform A (X) succeeds and Platform B (Threads) fails:
+- Platform A is marked `DELIVERED`.
+- Platform B is marked `FAILED` / `RETRYABLE_FAILURE`.
+- Package status resolves to `PARTIALLY_DELIVERED`.
+- Retrying the package only executes Platform B. Platform A is completely untouched and never reposted.
+
+### 5. Idempotency Keys
+
+- `publication_key`: Deterministic across all retries of the same content:
+  `{package_id}:{target}:{variant}:{payload_hash[:16]}`
+- `attempt_key`: Unique per network attempt:
+  `{publication_key}:attempt_{attempt_id}`
+
