@@ -101,7 +101,40 @@ async def apply_migrations(engine) -> None:
             "CREATE INDEX IF NOT EXISTS ix_content_packages_job_id ON content_packages (job_id);",
             "CREATE INDEX IF NOT EXISTS ix_content_deliveries_package_id ON content_deliveries (package_id);",
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_content_deliveries_idempotency_key ON content_deliveries (idempotency_key);",
+            """
+            CREATE TABLE IF NOT EXISTS publication_intents (
+                id VARCHAR PRIMARY KEY,
+                package_id VARCHAR NOT NULL REFERENCES content_packages(id),
+                job_id VARCHAR NOT NULL REFERENCES jobs(id),
+                target VARCHAR NOT NULL,
+                variant VARCHAR NOT NULL,
+                approved_by BIGINT NOT NULL,
+                approved_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                payload_hash VARCHAR NOT NULL,
+                publication_key VARCHAR NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'PENDING',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TIMESTAMP WITHOUT TIME ZONE,
+                last_error_code VARCHAR,
+                last_error_message TEXT,
+                provider_post_id VARCHAR,
+                provider_url VARCHAR,
+                created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_publication_intents_package_id ON publication_intents (package_id);",
+            "CREATE INDEX IF NOT EXISTS ix_publication_intents_job_id ON publication_intents (job_id);",
+            "CREATE INDEX IF NOT EXISTS ix_publication_intents_publication_key ON publication_intents (publication_key);",
+            "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS publication_key VARCHAR;",
+            "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS payload_hash VARCHAR;",
+            "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS provider_post_id VARCHAR;",
+            "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS provider_url VARCHAR;",
+            "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;",
+            "ALTER TABLE content_deliveries ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMP WITHOUT TIME ZONE;",
+            "CREATE INDEX IF NOT EXISTS ix_content_deliveries_publication_key ON content_deliveries (publication_key);",
         ]
+
         for q in queries:
             await conn.execute(text(q))
         logger.info("Migrations applied successfully.")

@@ -24,6 +24,27 @@ class Settings(BaseSettings):
     transcription_primary_enabled: bool = True
     transcription_min_chars_per_min: int = 400
 
+    # External Platform Connectors (X / Twitter)
+    x_api_key: str | None = None
+    x_api_secret: str | None = None
+    x_access_token: str | None = None
+    x_access_token_secret: str | None = None
+    x_bearer_token: str | None = None
+    x_client_id: str | None = None
+    x_client_secret: str | None = None
+    expected_x_user_id: str | None = None
+    expected_x_username: str | None = None
+
+    # External Platform Connectors (Threads)
+    threads_access_token: str | None = None
+    threads_user_id: str | None = None
+    expected_threads_user_id: str | None = None
+
+    # Publication Retry Orchestration
+    publish_max_retries: int = 3
+    publish_retry_backoff_seconds: list[int] = [30, 120, 300]
+
+
     class Config:
         env_file = ".env"
         extra = "allow"

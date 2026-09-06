@@ -14,10 +14,17 @@ from app.bot.analysis_view import (
     package_variant_keyboard,
 )
 from app.db.database import AsyncSessionLocal
-from app.db.models import ContentDeliveryModel, ContentPackageModel, Job
+from app.db.models import (
+    ContentDeliveryModel,
+    ContentPackageModel,
+    Job,
+    PublicationIntentModel,
+)
+from app.worker.connectors import CapabilityStatus, ConnectorRegistry
 from app.worker.content_package import (
     ContentPackage,
     OutputVariantType,
+    TargetPlatform,
     approve_package,
     regenerate_variant_from_canonical,
     reject_package,
@@ -81,6 +88,12 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
 
         if action == "menu":
             targets = pkg_row.distribution_targets or {}
+            x_conn = ConnectorRegistry.get_connector(TargetPlatform.X)
+            x_badge = "[CONNECTED]" if x_conn.capabilities().status == CapabilityStatus.CONNECTED_SUPPORTED else "[НЕ НАСТРОЕН]"
+            thr_conn = ConnectorRegistry.get_connector(TargetPlatform.THREADS)
+            thr_badge = "[CONNECTED]" if thr_conn.capabilities().status == CapabilityStatus.CONNECTED_SUPPORTED else "[НЕ НАСТРОЕН]"
+            yt_badge = "[РУЧНОЙ ЭКСПОРТ]"
+
             x_status = targets.get("X", {}).get("status", "PENDING_APPROVAL")
             thr_status = targets.get("THREADS", {}).get("status", "PENDING_APPROVAL")
             yt_status = targets.get("YOUTUBE_COMMUNITY", {}).get("status", "PENDING_APPROVAL")
@@ -92,9 +105,9 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                 f"Статус пакета: <b>{pkg_row.status}</b>\n\n"
                 f"• <b>Telegram (User):</b> ✅ Доставлено\n"
                 f"• <b>Telegram (Канал):</b> {targets.get('TELEGRAM_CHANNEL', {}).get('status', 'NOT_APPLICABLE')}\n"
-                f"• <b>X (Twitter):</b> {x_status}\n"
-                f"• <b>Threads:</b> {thr_status}\n"
-                f"• <b>YouTube Community:</b> {yt_status}\n\n"
+                f"• <b>X (Twitter) {x_badge}:</b> {x_status}\n"
+                f"• <b>Threads {thr_badge}:</b> {thr_status}\n"
+                f"• <b>YouTube Community {yt_badge}:</b> {yt_status}\n\n"
                 f"<i>Выберите вариант для предпросмотра или одобрите экспорт на внешние площадки.</i>"
             )
             await callback.answer()
@@ -123,10 +136,17 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                 reason = var_data.get("failure_reason") or "Превышен лимит площадки."
                 text_content = f"⚠️ <b>Вариант {variant_name} не сформирован</b>\n\nПричина: {reason}"
             elif v_text:
-                text_content = (
-                    f"📝 <b>Вариант: {variant_name}</b> ({char_count} знаков)\n\n"
-                    f"{v_text}"
-                )
+                if variant_name == "YOUTUBE_COMMUNITY":
+                    text_content = (
+                        f"📝 <b>Вариант: YOUTUBE_COMMUNITY</b> ({char_count} знаков)\n"
+                        f"<i>ℹ️ Официальный API YouTube не поддерживает публикацию постов в Community. Текст готов для ручного копирования:</i>\n\n"
+                        f"{v_text}"
+                    )
+                else:
+                    text_content = (
+                        f"📝 <b>Вариант: {variant_name}</b> ({char_count} знаков)\n\n"
+                        f"{v_text}"
+                    )
             else:
                 text_content = f"⚠️ Вариант {variant_name} недоступен."
 
@@ -161,9 +181,10 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                 "distribution_targets": pkg_row.distribution_targets,
                 "approval_state": pkg_row.status,
                 "delivery_records": [],
+                "publication_intents": [],
             })
 
-            pkg_obj, new_recs = approve_package(pkg_obj, callback.from_user.id, job.user_id)
+            pkg_obj, new_recs = approve_package(pkg_obj, callback.from_user.id, job.user_id, use_connectors=True)
             pkg_row.status = pkg_obj.approval_state.value
             pkg_row.distribution_targets = {
                 k: v.model_dump(mode="json") for k, v in pkg_obj.distribution_targets.items()
@@ -182,23 +203,59 @@ async def handle_package_callback(callback: types.CallbackQuery) -> None:
                     idempotency_key=r.idempotency_key,
                     error_code=r.error_code,
                     error_message=r.error_message,
+                    publication_key=r.publication_key,
+                    payload_hash=r.payload_hash,
+                    provider_post_id=r.provider_post_id,
+                    provider_url=r.provider_url,
+                    retry_count=r.retry_count,
+                    next_retry_at=_to_naive_utc(r.next_retry_at),
                     started_at=_to_naive_utc(r.started_at) or _to_naive_utc(datetime.now(timezone.utc)),
                     finished_at=_to_naive_utc(r.finished_at),
                 )
                 session.add(deliv_model)
 
+            for intent in pkg_obj.publication_intents:
+                intent_model = PublicationIntentModel(
+                    id=intent.intent_id,
+                    package_id=intent.package_id,
+                    job_id=intent.job_id,
+                    target=intent.target.value,
+                    variant=intent.variant.value,
+                    approved_by=intent.approved_by,
+                    approved_at=_to_naive_utc(intent.approved_at) or _to_naive_utc(datetime.now(timezone.utc)),
+                    payload_hash=intent.payload_hash,
+                    publication_key=intent.publication_key,
+                    status=intent.status.value,
+                    attempt_count=intent.attempt_count,
+                    next_retry_at=_to_naive_utc(intent.next_retry_at),
+                    last_error_code=intent.last_error_code,
+                    last_error_message=intent.last_error_message,
+                    provider_post_id=intent.provider_post_id,
+                    provider_url=intent.provider_url,
+                    created_at=_to_naive_utc(datetime.now(timezone.utc)),
+                    updated_at=_to_naive_utc(datetime.now(timezone.utc)),
+                )
+                session.add(intent_model)
 
             await session.commit()
-            await callback.answer("✅ Внешние платформы одобрены (Level A: готовы к экспорту)!")
+
+            has_pending = any(i.status.value == "PENDING" for i in pkg_obj.publication_intents)
+            if has_pending:
+                import asyncio
+
+                from app.worker.tasks import execute_publication_intents
+                asyncio.create_task(execute_publication_intents(pkg_obj.package_id))
+
+            await callback.answer("✅ Решение по дистрибуции зафиксировано!")
 
             targets = pkg_row.distribution_targets
             status_text = (
-                f"✅ <b>Контент-пакет одобрен для внешнего экспорта</b>\n\n"
+                f"✅ <b>Контент-пакет одобрен для внешнего распространения</b>\n\n"
                 f"Статус пакета: <b>{pkg_row.status}</b>\n\n"
                 f"• <b>X (Twitter):</b> {targets.get('X', {}).get('status')}\n"
                 f"• <b>Threads:</b> {targets.get('THREADS', {}).get('status')}\n"
                 f"• <b>YouTube Community:</b> {targets.get('YOUTUBE_COMMUNITY', {}).get('status')}\n\n"
-                f"<i>Все материалы готовы. Доступны для копирования через кнопки выше.</i>"
+                f"<i>Материалы готовы для экспорта или доступны для копирования через кнопки выше.</i>"
             )
             try:
                 await callback.message.edit_text(

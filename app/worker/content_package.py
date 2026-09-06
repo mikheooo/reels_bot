@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import uuid
 from enum import Enum
 from typing import Any
@@ -28,6 +29,7 @@ class PackageStatus(str, Enum):
     GENERATED = "GENERATED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     APPROVED = "APPROVED"
+    DELIVERY_PENDING = "DELIVERY_PENDING"
     PARTIALLY_DELIVERED = "PARTIALLY_DELIVERED"
     DELIVERED = "DELIVERED"
     REJECTED = "REJECTED"
@@ -52,11 +54,33 @@ class TargetDeliveryStatus(str, Enum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
     APPROVED_NOT_CONNECTED = "APPROVED_NOT_CONNECTED"
+    SUPPORTED_NOT_CONFIGURED = "SUPPORTED_NOT_CONFIGURED"
+    READY_FOR_MANUAL_PUBLISH = "READY_FOR_MANUAL_PUBLISH"
+    MANUAL_EXPORT_ACKNOWLEDGED = "MANUAL_EXPORT_ACKNOWLEDGED"
+    DELIVERY_UNKNOWN = "DELIVERY_UNKNOWN"
     DELIVERED = "DELIVERED"
     SKIPPED_DUPLICATE = "SKIPPED_DUPLICATE"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
     NOT_RENDERABLE = "NOT_RENDERABLE"
+
+
+class PublicationIntentStatus(str, Enum):
+    PENDING = "PENDING"
+    IN_FLIGHT = "IN_FLIGHT"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    DELIVERY_UNKNOWN = "DELIVERY_UNKNOWN"
+    APPROVAL_STALE = "APPROVAL_STALE"
+    SUPPORTED_NOT_CONFIGURED = "SUPPORTED_NOT_CONFIGURED"
+    MANUAL_EXPORT_READY = "MANUAL_EXPORT_READY"
+
+
+def compute_payload_hash(text: str) -> str:
+    """Compute deterministic SHA-256 hash of normalized variant text."""
+    normalized = (text or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
 
 
 class DeliveryOutcome(str, Enum):
@@ -110,6 +134,12 @@ class DeliveryRecord(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     idempotency_key: str
+    publication_key: str | None = None
+    payload_hash: str | None = None
+    provider_post_id: str | None = None
+    provider_url: str | None = None
+    retry_count: int = 0
+    next_retry_at: datetime.datetime | None = None
 
     @classmethod
     def create(
@@ -124,6 +154,12 @@ class DeliveryRecord(BaseModel):
         error_code: str | None = None,
         error_message: str | None = None,
         finished_at: datetime.datetime | None = None,
+        publication_key: str | None = None,
+        payload_hash: str | None = None,
+        provider_post_id: str | None = None,
+        provider_url: str | None = None,
+        retry_count: int = 0,
+        next_retry_at: datetime.datetime | None = None,
     ) -> DeliveryRecord:
         key = f"{package_id}:{target.value}:{variant.value}:{attempt_id}"
         return cls(
@@ -138,6 +174,55 @@ class DeliveryRecord(BaseModel):
             error_message=error_message,
             finished_at=finished_at or _utc_now(),
             idempotency_key=key,
+            publication_key=publication_key,
+            payload_hash=payload_hash,
+            provider_post_id=provider_post_id,
+            provider_url=provider_url,
+            retry_count=retry_count,
+            next_retry_at=next_retry_at,
+        )
+
+
+class PublicationIntent(BaseModel):
+    intent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    package_id: str
+    job_id: str
+    target: TargetPlatform
+    variant: OutputVariantType
+    approved_by: int
+    approved_at: datetime.datetime = Field(default_factory=_utc_now)
+    payload_hash: str
+    publication_key: str
+    status: PublicationIntentStatus = PublicationIntentStatus.PENDING
+    attempt_count: int = 0
+    next_retry_at: datetime.datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    provider_post_id: str | None = None
+    provider_url: str | None = None
+
+    @classmethod
+    def create(
+        cls,
+        package_id: str,
+        job_id: str,
+        target: TargetPlatform,
+        variant: OutputVariantType,
+        approved_by: int,
+        payload_text: str,
+        status: PublicationIntentStatus = PublicationIntentStatus.PENDING,
+    ) -> PublicationIntent:
+        p_hash = compute_payload_hash(payload_text)
+        pub_key = f"{package_id}:{target.value}:{variant.value}:{p_hash[:16]}"
+        return cls(
+            package_id=package_id,
+            job_id=job_id,
+            target=target,
+            variant=variant,
+            approved_by=approved_by,
+            payload_hash=p_hash,
+            publication_key=pub_key,
+            status=status,
         )
 
 
@@ -156,6 +241,7 @@ class ContentPackage(BaseModel):
     distribution_targets: dict[str, DistributionTarget] = Field(default_factory=dict)
     approval_state: PackageStatus = PackageStatus.GENERATED
     delivery_records: list[DeliveryRecord] = Field(default_factory=list)
+    publication_intents: list[PublicationIntent] = Field(default_factory=list)
 
 
 # Valid lifecycle state transitions map
@@ -163,23 +249,32 @@ VALID_TRANSITIONS: dict[PackageStatus, set[PackageStatus]] = {
     PackageStatus.GENERATED: {
         PackageStatus.REVIEW_REQUIRED,
         PackageStatus.APPROVED,
+        PackageStatus.DELIVERY_PENDING,
         PackageStatus.PARTIALLY_DELIVERED,
         PackageStatus.FAILED,
     },
     PackageStatus.REVIEW_REQUIRED: {
         PackageStatus.APPROVED,
+        PackageStatus.DELIVERY_PENDING,
         PackageStatus.PARTIALLY_DELIVERED,
         PackageStatus.DELIVERED,
         PackageStatus.REJECTED,
         PackageStatus.FAILED,
     },
     PackageStatus.APPROVED: {
+        PackageStatus.DELIVERY_PENDING,
+        PackageStatus.PARTIALLY_DELIVERED,
+        PackageStatus.DELIVERED,
+        PackageStatus.FAILED,
+    },
+    PackageStatus.DELIVERY_PENDING: {
         PackageStatus.PARTIALLY_DELIVERED,
         PackageStatus.DELIVERED,
         PackageStatus.FAILED,
     },
     PackageStatus.PARTIALLY_DELIVERED: {
         PackageStatus.APPROVED,
+        PackageStatus.DELIVERY_PENDING,
         PackageStatus.DELIVERED,
         PackageStatus.REJECTED,
         PackageStatus.FAILED,
@@ -188,6 +283,7 @@ VALID_TRANSITIONS: dict[PackageStatus, set[PackageStatus]] = {
     PackageStatus.REJECTED: set(),  # Terminal
     PackageStatus.FAILED: set(),  # Terminal
 }
+
 
 
 def transition_package_status(
@@ -326,17 +422,92 @@ def build_content_package(
     return package
 
 
+def reconcile_package_status(package: ContentPackage) -> PackageStatus:
+    """
+    Reconcile package lifecycle status based on distribution target states.
+
+    In Level B:
+    - REVIEW_REQUIRED: if any target is PENDING_APPROVAL and package is in GENERATED.
+    - DELIVERY_PENDING: if any connected target is APPROVED or DELIVERY_UNKNOWN.
+    - DELIVERED: only when all required connected targets reached terminal outcome.
+    - REJECTED / FAILED: preserved if explicitly transitioned.
+    """
+    if package.approval_state in (PackageStatus.REJECTED, PackageStatus.FAILED):
+        return package.approval_state
+
+    # Check terminal / resolved outcomes first
+    resolved_statuses = (
+        TargetDeliveryStatus.DELIVERED,
+        TargetDeliveryStatus.APPROVED_NOT_CONNECTED,
+        TargetDeliveryStatus.SUPPORTED_NOT_CONFIGURED,
+        TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH,
+        TargetDeliveryStatus.MANUAL_EXPORT_ACKNOWLEDGED,
+        TargetDeliveryStatus.SKIPPED_DUPLICATE,
+        TargetDeliveryStatus.NOT_RENDERABLE,
+        TargetDeliveryStatus.REJECTED,
+    )
+    all_resolved = all(
+        t.status in resolved_statuses
+        for t in package.distribution_targets.values()
+    )
+
+    if all_resolved:
+        has_failed = any(
+            t.status == TargetDeliveryStatus.FAILED
+            for t in package.distribution_targets.values()
+        )
+        has_delivered = any(
+            t.status == TargetDeliveryStatus.DELIVERED
+            for t in package.distribution_targets.values()
+        )
+        if has_failed and has_delivered:
+            return PackageStatus.PARTIALLY_DELIVERED
+        elif has_failed and not has_delivered:
+            return PackageStatus.FAILED
+        else:
+            return PackageStatus.DELIVERED
+
+    # Check for in-flight / active approved deliveries
+    has_in_flight = any(
+        t.status in (TargetDeliveryStatus.APPROVED, TargetDeliveryStatus.DELIVERY_UNKNOWN)
+        for t in package.distribution_targets.values()
+    )
+    if has_in_flight:
+        tg_delivered = any(
+            t.target in (TargetPlatform.TELEGRAM_USER, TargetPlatform.TELEGRAM_CHANNEL)
+            and t.status == TargetDeliveryStatus.DELIVERED
+            for t in package.distribution_targets.values()
+        )
+        if tg_delivered:
+            return PackageStatus.PARTIALLY_DELIVERED
+        return PackageStatus.DELIVERY_PENDING
+
+    # Only transition to REVIEW_REQUIRED if we are in GENERATED
+    if package.approval_state == PackageStatus.GENERATED:
+        has_pending_approval = any(
+            t.status == TargetDeliveryStatus.PENDING_APPROVAL
+            for t in package.distribution_targets.values()
+        )
+        if has_pending_approval:
+            return PackageStatus.REVIEW_REQUIRED
+
+    return package.approval_state
+
+
 def approve_package(
     package: ContentPackage,
     user_id: int,
     expected_owner_id: int,
     target_platform: TargetPlatform | None = None,
+    use_connectors: bool = False,
+    connector_registry: Any | None = None,
 ) -> tuple[ContentPackage, list[DeliveryRecord]]:
     """
     Approve external distribution targets in a ContentPackage.
 
     Security check: user_id must equal expected_owner_id.
-    Level A boundary: transitions external targets to APPROVED_NOT_CONNECTED.
+    use_connectors=False: Level A boundary (APPROVED_NOT_CONNECTED).
+    use_connectors=True: Level B boundary (persists PublicationIntent, inspects connector status).
     Idempotent: double approval returns existing records without re-publishing.
     """
     if user_id != expected_owner_id:
@@ -349,7 +520,7 @@ def approve_package(
             f"Cannot approve rejected package {package.package_id}"
         )
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     new_records: list[DeliveryRecord] = []
 
     # Determine which targets to approve
@@ -374,15 +545,14 @@ def approve_package(
         if t.status in (
             TargetDeliveryStatus.APPROVED,
             TargetDeliveryStatus.APPROVED_NOT_CONNECTED,
+            TargetDeliveryStatus.SUPPORTED_NOT_CONFIGURED,
+            TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH,
+            TargetDeliveryStatus.MANUAL_EXPORT_ACKNOWLEDGED,
             TargetDeliveryStatus.DELIVERED,
             TargetDeliveryStatus.NOT_RENDERABLE,
+            TargetDeliveryStatus.REJECTED,
         ):
             continue
-
-        # Level A Publication Boundary: transition to APPROVED_NOT_CONNECTED
-        t.status = TargetDeliveryStatus.APPROVED_NOT_CONNECTED
-        t.attempted_at = now
-        t.delivered_at = now
 
         # Count previous attempts for idempotency attempt_id
         attempt_id = (
@@ -394,42 +564,156 @@ def approve_package(
             + 1
         )
 
-        record = DeliveryRecord.create(
-            package_id=package.package_id,
-            target=t.target,
-            variant=t.variant_type,
-            attempt_id=attempt_id,
-            approval_state=PackageStatus.APPROVED,
-            status=DeliveryOutcome.APPROVED_NOT_CONNECTED,
-            finished_at=now,
-        )
-        package.delivery_records.append(record)
-        new_records.append(record)
-        any_updated = True
+        # Get payload text and stable hash
+        variants_dict = getattr(package.output_variants, "variants", {}) if hasattr(package, "output_variants") else {}
+        v = variants_dict.get(t.variant_type.value)
+        payload_text = (v.text if v else t.rendered_payload) or ""
+        p_hash = compute_payload_hash(payload_text)
+        pub_key = f"{package.package_id}:{t.target.value}:{t.variant_type.value}:{p_hash[:16]}"
 
-    # Check if all targets reached terminal outcome
-    all_terminal = True
-    for t in package.distribution_targets.values():
-        if t.status not in (
-            TargetDeliveryStatus.DELIVERED,
-            TargetDeliveryStatus.APPROVED_NOT_CONNECTED,
-            TargetDeliveryStatus.SKIPPED_DUPLICATE,
-            TargetDeliveryStatus.NOT_RENDERABLE,
-            TargetDeliveryStatus.REJECTED,
-        ):
-            all_terminal = False
-            break
+        if use_connectors:
+            # Level B boundary: connector status resolution
+            if t.target == TargetPlatform.YOUTUBE_COMMUNITY:
+                t.status = TargetDeliveryStatus.READY_FOR_MANUAL_PUBLISH
+                t.attempted_at = now
+                intent = PublicationIntent(
+                    package_id=package.package_id,
+                    job_id=package.job_id,
+                    target=t.target,
+                    variant=t.variant_type,
+                    approved_by=user_id,
+                    approved_at=now,
+                    payload_hash=p_hash,
+                    publication_key=pub_key,
+                    status=PublicationIntentStatus.MANUAL_EXPORT_READY,
+                )
+                if not any(i.publication_key == pub_key for i in package.publication_intents):
+                    package.publication_intents.append(intent)
 
-    if all_terminal:
-        if package.approval_state in (
-            PackageStatus.APPROVED,
-            PackageStatus.PARTIALLY_DELIVERED,
-            PackageStatus.REVIEW_REQUIRED,
-            PackageStatus.GENERATED,
-        ):
-            transition_package_status(
-                package, PackageStatus.DELIVERED, "All distribution targets terminal"
+                record = DeliveryRecord.create(
+                    package_id=package.package_id,
+                    target=t.target,
+                    variant=t.variant_type,
+                    attempt_id=attempt_id,
+                    approval_state=PackageStatus.APPROVED,
+                    status=DeliveryOutcome.APPROVED_NOT_CONNECTED,
+                    finished_at=now,
+                    publication_key=pub_key,
+                    payload_hash=p_hash,
+                    error_code="MANUAL_EXPORT_ONLY",
+                    error_message="YouTube Community Post publishing is unsupported by official API. Manual export required.",
+                )
+                package.delivery_records.append(record)
+                new_records.append(record)
+                any_updated = True
+            else:
+                # X or Threads connector
+                reg = connector_registry
+                if reg is None:
+                    try:
+                        from app.worker.connectors import ConnectorRegistry
+                        reg = ConnectorRegistry
+                    except ImportError:
+                        reg = None
+
+                connector = reg.get_connector(t.target) if reg else None
+                caps = connector.capabilities() if connector else None
+
+                if caps and caps.status.value == "CONNECTED_SUPPORTED":
+                    t.status = TargetDeliveryStatus.APPROVED
+                    t.attempted_at = now
+                    intent = PublicationIntent(
+                        package_id=package.package_id,
+                        job_id=package.job_id,
+                        target=t.target,
+                        variant=t.variant_type,
+                        approved_by=user_id,
+                        approved_at=now,
+                        payload_hash=p_hash,
+                        publication_key=pub_key,
+                        status=PublicationIntentStatus.PENDING,
+                    )
+                    if not any(i.publication_key == pub_key for i in package.publication_intents):
+                        package.publication_intents.append(intent)
+                    any_updated = True
+                else:
+                    # Supported not configured
+                    t.status = TargetDeliveryStatus.SUPPORTED_NOT_CONFIGURED
+                    t.attempted_at = now
+                    intent = PublicationIntent(
+                        package_id=package.package_id,
+                        job_id=package.job_id,
+                        target=t.target,
+                        variant=t.variant_type,
+                        approved_by=user_id,
+                        approved_at=now,
+                        payload_hash=p_hash,
+                        publication_key=pub_key,
+                        status=PublicationIntentStatus.SUPPORTED_NOT_CONFIGURED,
+                    )
+                    if not any(i.publication_key == pub_key for i in package.publication_intents):
+                        package.publication_intents.append(intent)
+
+                    record = DeliveryRecord.create(
+                        package_id=package.package_id,
+                        target=t.target,
+                        variant=t.variant_type,
+                        attempt_id=attempt_id,
+                        approval_state=PackageStatus.APPROVED,
+                        status=DeliveryOutcome.APPROVED_NOT_CONNECTED,
+                        finished_at=now,
+                        publication_key=pub_key,
+                        payload_hash=p_hash,
+                        error_code="SUPPORTED_NOT_CONFIGURED",
+                        error_message="Connector credentials not configured in environment.",
+                    )
+                    package.delivery_records.append(record)
+                    new_records.append(record)
+                    any_updated = True
+        else:
+            # Level A Publication Boundary: transition to APPROVED_NOT_CONNECTED
+            t.status = TargetDeliveryStatus.APPROVED_NOT_CONNECTED
+            t.attempted_at = now
+            t.delivered_at = now
+
+            intent = PublicationIntent(
+                package_id=package.package_id,
+                job_id=package.job_id,
+                target=t.target,
+                variant=t.variant_type,
+                approved_by=user_id,
+                approved_at=now,
+                payload_hash=p_hash,
+                publication_key=pub_key,
+                status=PublicationIntentStatus.SUPPORTED_NOT_CONFIGURED,
             )
+            if not any(i.publication_key == pub_key for i in package.publication_intents):
+                package.publication_intents.append(intent)
+
+            record = DeliveryRecord.create(
+                package_id=package.package_id,
+                target=t.target,
+                variant=t.variant_type,
+                attempt_id=attempt_id,
+                approval_state=PackageStatus.APPROVED,
+                status=DeliveryOutcome.APPROVED_NOT_CONNECTED,
+                finished_at=now,
+                publication_key=pub_key,
+                payload_hash=p_hash,
+            )
+            package.delivery_records.append(record)
+            new_records.append(record)
+            any_updated = True
+
+    if not any_updated:
+        return package, new_records
+
+    # Reconcile package lifecycle status
+    new_state = reconcile_package_status(package)
+    if new_state != package.approval_state and new_state in VALID_TRANSITIONS.get(package.approval_state, set()):
+        transition_package_status(
+            package, new_state, f"Approved by user {user_id}"
+        )
     elif any_updated and package.approval_state in (
         PackageStatus.GENERATED,
         PackageStatus.REVIEW_REQUIRED,

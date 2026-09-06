@@ -1,0 +1,532 @@
+[
+  {
+    "scenario_id": "case_01_x_publish_success",
+    "description": "Owner approves X target, connector posts tweet via official v2 endpoint, verifies lookup, persists post ID and canonical URL",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Автоматизация PostgreSQL в n8n",
+      "topic": "DevOps",
+      "summary": "Настройка узла Postgres в n8n для сбора лидов.",
+      "what_it_is": "Инструкция по интеграции n8n и PostgreSQL.",
+      "why_it_matters": "Ускоряет обработку лидов без кодинга.",
+      "key_points": [
+        "SSL подключение",
+        "Параметризованные запросы"
+      ],
+      "actionable_steps": [
+        "Создать readonly пользователя"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.85,
+      "priority_reasons": [
+        "Actionable engineering workflow"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2001,
+    "attempt_user_id": 2001,
+    "target": "X",
+    "action": "X_PUBLISH_SUCCESS",
+    "mock_http_status": 201,
+    "mock_post_id": "1892837465912384",
+    "expected_package_status": "DELIVERED",
+    "expected_intent_status": "SUCCEEDED",
+    "expected_target_status": "DELIVERED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_02_x_rate_limit_429",
+    "description": "X API returns HTTP 429 rate limit error; classified as retryable, backoff scheduled, publication_key preserved",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Советы по масштабированию Redis",
+      "topic": "Инфраструктура",
+      "summary": "Оптимизация памяти Redis через hashes.",
+      "what_it_is": "Руководство по Redis memory optimization.",
+      "why_it_matters": "Снижает расходы на RAM в 3 раза.",
+      "key_points": [
+        "Используйте ziplist",
+        "Не храните json строками"
+      ],
+      "actionable_steps": [
+        "Включить maxmemory policy"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.82,
+      "priority_reasons": [
+        "Useful tips"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2002,
+    "attempt_user_id": 2002,
+    "target": "X",
+    "action": "X_RATE_LIMIT_429",
+    "mock_http_status": 429,
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "PENDING",
+    "expected_target_status": "APPROVED",
+    "expected_is_retryable": true,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_03_x_ambiguous_timeout_lookup_resolved",
+    "description": "X API publish times out (ambiguous outcome); reconciliation lookup searches recent tweets, finds matching tweet, marks SUCCEEDED without re-posting",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Оптимизация Docker образов",
+      "topic": "DevOps",
+      "summary": "Multi-stage builds в Dockerfile.",
+      "what_it_is": "Инструкция по уменьшению веса образов.",
+      "why_it_matters": "Ускоряет деплой.",
+      "key_points": [
+        "Multi-stage builds"
+      ],
+      "actionable_steps": [
+        "Разделить builder и runtime"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.88,
+      "priority_reasons": [
+        "Engineering optimization"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2003,
+    "attempt_user_id": 2003,
+    "target": "X",
+    "action": "X_AMBIGUOUS_TIMEOUT_LOOKUP_RESOLVED",
+    "mock_http_status": null,
+    "mock_post_id": "1892837465999999",
+    "expected_package_status": "DELIVERED",
+    "expected_intent_status": "SUCCEEDED",
+    "expected_target_status": "DELIVERED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_04_x_bad_credentials_401",
+    "description": "X API returns HTTP 401 Unauthorized; classified as non-retryable failure, no retry loop, credentials masked in error",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Настройка Nginx как reverse proxy",
+      "topic": "Сети",
+      "summary": "Конфигурация upstream в Nginx.",
+      "what_it_is": "Гайд по reverse proxy.",
+      "why_it_matters": "Балансировка нагрузки.",
+      "key_points": [
+        "Proxy_pass",
+        "Keepalive"
+      ],
+      "actionable_steps": [
+        "Проверить nginx -t"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.79,
+      "priority_reasons": [
+        "Useful network guide"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2004,
+    "attempt_user_id": 2004,
+    "target": "X",
+    "action": "X_BAD_CREDENTIALS_401",
+    "mock_http_status": 401,
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "FAILED",
+    "expected_target_status": "FAILED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_05_threads_two_step_success",
+    "description": "Threads connector creates container then publishes container via official Graph API endpoints; returns published media ID",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Асинхронный Python и asyncio",
+      "topic": "Python",
+      "summary": "Event loop и TaskGroup в Python 3.11+.",
+      "what_it_is": "Гайд по современному asyncio.",
+      "why_it_matters": "Предотвращает утечки задач.",
+      "key_points": [
+        "TaskGroup",
+        "ExceptionGroup"
+      ],
+      "actionable_steps": [
+        "Заменить gather на TaskGroup"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.9,
+      "priority_reasons": [
+        "High technical depth"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2005,
+    "attempt_user_id": 2005,
+    "target": "THREADS",
+    "action": "THREADS_TWO_STEP_SUCCESS",
+    "mock_http_status": 200,
+    "mock_post_id": "17998822334455",
+    "expected_package_status": "DELIVERED",
+    "expected_intent_status": "SUCCEEDED",
+    "expected_target_status": "DELIVERED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_06_threads_publish_fails_retryable",
+    "description": "Threads container creation succeeds, but publish step returns 503 Service Unavailable; classified as retryable",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "FastAPI и Dependency Injection",
+      "topic": "Python Web",
+      "summary": "Использование Depends в FastAPI.",
+      "what_it_is": "Шаблон внедрения зависимостей.",
+      "why_it_matters": "Упрощает тестирование эндпоинтов.",
+      "key_points": [
+        "Depends",
+        "Security scopes"
+      ],
+      "actionable_steps": [
+        "Вынести сессию DB в зависимость"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.81,
+      "priority_reasons": [
+        "Practical web engineering"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2006,
+    "attempt_user_id": 2006,
+    "target": "THREADS",
+    "action": "THREADS_PUBLISH_FAILS_RETRYABLE",
+    "mock_http_status": 503,
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "PENDING",
+    "expected_target_status": "APPROVED",
+    "expected_is_retryable": true,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_07_threads_rate_limit_429",
+    "description": "Threads API returns rate limit 429 error; classified as retryable error with backoff scheduled",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "PostgreSQL Jsonb индексация",
+      "topic": "Базы данных",
+      "summary": "GIN индексы на jsonb полях.",
+      "what_it_is": "Гайд по jsonb queries.",
+      "why_it_matters": "Ускоряет поиск по документам.",
+      "key_points": [
+        "jsonb_path_ops",
+        "GIN индекс"
+      ],
+      "actionable_steps": [
+        "Создать GIN индекс"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.84,
+      "priority_reasons": [
+        "Database performance"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2007,
+    "attempt_user_id": 2007,
+    "target": "THREADS",
+    "action": "THREADS_RATE_LIMIT_429",
+    "mock_http_status": 429,
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "PENDING",
+    "expected_target_status": "APPROVED",
+    "expected_is_retryable": true,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_08_unauthorized_approval_blocked",
+    "description": "Non-owner user attempts to approve package; raises UnauthorizedApprovalError, 0 intents dispatched, 0 publications",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Безопасность API ключей",
+      "topic": "Безопасность",
+      "summary": "Хранение секретов в HashiCorp Vault.",
+      "what_it_is": "Практика управления секретами.",
+      "why_it_matters": "Исключает утечку токенов в Git.",
+      "key_points": [
+        "Vault",
+        "Env injection"
+      ],
+      "actionable_steps": [
+        "Настроить git-secrets"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.86,
+      "priority_reasons": [
+        "Security practice"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2008,
+    "attempt_user_id": 9999,
+    "target": "X",
+    "action": "UNAUTHORIZED_APPROVAL",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": null,
+    "expected_target_status": "PENDING_APPROVAL",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": true,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_09_stale_approval_hash_mismatch",
+    "description": "Variant regenerated or edited after approval; payload hash differs, worker blocks publication with APPROVAL_STALE",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Мониторинг Prometheus и Grafana",
+      "topic": "DevOps",
+      "summary": "Сбор метрик микросервисов.",
+      "what_it_is": "Гайд по мониторингу сервисов.",
+      "why_it_matters": "Раннее обнаружение сбоев.",
+      "key_points": [
+        "Prometheus metrics",
+        "Grafana dashboards"
+      ],
+      "actionable_steps": [
+        "Добавить /metrics эндпоинт"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.87,
+      "priority_reasons": [
+        "Monitoring guide"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2009,
+    "attempt_user_id": 2009,
+    "target": "X",
+    "action": "STALE_APPROVAL",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "APPROVAL_STALE",
+    "expected_target_status": "FAILED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": true
+  },
+  {
+    "scenario_id": "case_10_double_approval_idempotency",
+    "description": "Owner approves package twice; second approval is safe no-op, produces 0 duplicate intents, 0 duplicate delivery records",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Тестирование pytest и fixtures",
+      "topic": "QA",
+      "summary": "Написание параметризованных тестов.",
+      "what_it_is": "Руководство по pytest fixtures.",
+      "why_it_matters": "Качественное тестовое покрытие.",
+      "key_points": [
+        "pytest.mark.parametrize",
+        "conftest"
+      ],
+      "actionable_steps": [
+        "Покрыть edge cases тестами"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.83,
+      "priority_reasons": [
+        "Testing best practices"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2010,
+    "attempt_user_id": 2010,
+    "target": "X",
+    "action": "DOUBLE_APPROVE_IDEMPOTENCY",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "PENDING",
+    "expected_target_status": "APPROVED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_11_retry_same_publication_key",
+    "description": "Technical retry after transient failure reuses identical publication_key with incremented attempt_id (retry != new publication)",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Kafka Consumer Groups",
+      "topic": "Message Brokers",
+      "summary": "Балансировка партиций в Kafka consumer group.",
+      "what_it_is": "Руководство по Apache Kafka.",
+      "why_it_matters": "Горизонтальное масштабирование очередей.",
+      "key_points": [
+        "Partitions",
+        "Rebalance protocol"
+      ],
+      "actionable_steps": [
+        "Настроить heartbeat timeout"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.89,
+      "priority_reasons": [
+        "Message queue architecture"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2011,
+    "attempt_user_id": 2011,
+    "target": "X",
+    "action": "RETRY_SAME_PUBLICATION_KEY",
+    "expected_package_status": "PARTIALLY_DELIVERED",
+    "expected_intent_status": "PENDING",
+    "expected_target_status": "APPROVED",
+    "expected_is_retryable": true,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_12_youtube_community_unsupported",
+    "description": "YouTube Community target is classified as UNSUPPORTED_OFFICIAL_API; status READY_FOR_MANUAL_PUBLISH, manual export ready, never fakes DELIVERED",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Разбор архитектуры микросервисов",
+      "topic": "Архитектура",
+      "summary": "Паттерн Saga для распределенных транзакций.",
+      "what_it_is": "Обзор распределенных транзакций.",
+      "why_it_matters": "Согласованность данных без 2PC.",
+      "key_points": [
+        "Choreography vs Orchestration",
+        "Compensating transactions"
+      ],
+      "actionable_steps": [
+        "Спроектировать компенсирующие транзакции"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.91,
+      "priority_reasons": [
+        "Enterprise architecture pattern"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2012,
+    "attempt_user_id": 2012,
+    "target": "YOUTUBE_COMMUNITY",
+    "action": "YOUTUBE_COMMUNITY_UNSUPPORTED",
+    "expected_package_status": "DELIVERED",
+    "expected_intent_status": "MANUAL_EXPORT_READY",
+    "expected_target_status": "READY_FOR_MANUAL_PUBLISH",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  },
+  {
+    "scenario_id": "case_13_provider_account_identity_mismatch",
+    "description": "Authenticated provider user ID does not match expected_x_user_id setting; credential validation fails, publication blocked",
+    "canonical": {
+      "contract_version": "canonical_v1",
+      "title": "Управление доступом RBAC",
+      "topic": "Безопасность",
+      "summary": "Role-Based Access Control в корпоративных системах.",
+      "what_it_is": "Модель разграничения прав доступа.",
+      "why_it_matters": "Защита от несанкционированного доступа.",
+      "key_points": [
+        "Roles",
+        "Permissions",
+        "Principle of least privilege"
+      ],
+      "actionable_steps": [
+        "Провести ревизию прав пользователей"
+      ],
+      "risk_level": "LOW",
+      "risk_reasons": [],
+      "critical_disclaimers": [],
+      "source_language_code": "ru",
+      "analysis_language_code": "ru",
+      "priority_tier": "HIGH",
+      "priority_score": 0.85,
+      "priority_reasons": [
+        "Security compliance"
+      ],
+      "citations": []
+    },
+    "owner_user_id": 2013,
+    "attempt_user_id": 2013,
+    "target": "X",
+    "action": "ACCOUNT_IDENTITY_MISMATCH",
+    "expected_package_status": "DELIVERED",
+    "expected_intent_status": "SUPPORTED_NOT_CONFIGURED",
+    "expected_target_status": "SUPPORTED_NOT_CONFIGURED",
+    "expected_is_retryable": false,
+    "expected_unauthorized_error": false,
+    "expected_stale_error": false
+  }
+]

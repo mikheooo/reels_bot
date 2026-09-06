@@ -101,3 +101,33 @@ class ContentDeliveryModel(Base):
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime, server_default=func.now())
     finished_at = Column(DateTime, nullable=True)
+    publication_key = Column(String, nullable=True, index=True)
+    payload_hash = Column(String, nullable=True)
+    provider_post_id = Column(String, nullable=True)
+    provider_url = Column(String, nullable=True)
+    retry_count = Column(Integer, default=0, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True)
+
+
+class PublicationIntentModel(Base):
+    __tablename__ = "publication_intents"
+
+    id = Column(String, primary_key=True)
+    package_id = Column(String, ForeignKey("content_packages.id"), nullable=False, index=True)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    target = Column(String, nullable=False)
+    variant = Column(String, nullable=False)
+    approved_by = Column(BigInteger, nullable=False)
+    approved_at = Column(DateTime, nullable=False)
+    payload_hash = Column(String, nullable=False)
+    publication_key = Column(String, nullable=False, index=True)
+    status = Column(String, default="PENDING", nullable=False)
+    attempt_count = Column(Integer, default=0, nullable=False)
+    next_retry_at = Column(DateTime, nullable=True)
+    last_error_code = Column(String, nullable=True)
+    last_error_message = Column(Text, nullable=True)
+    provider_post_id = Column(String, nullable=True)
+    provider_url = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
