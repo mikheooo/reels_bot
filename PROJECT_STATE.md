@@ -1,20 +1,21 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 03:10 ICT
+Snapshot: 2026-09-07 03:26 ICT
 
-Stage: **Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE (Observation / Shadow Calibration Mode)**
+Stage: **Telegram Human-Friendly Risk Explanation UX Patch — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
-- Release commit: `7bb6239` — feat(outcome): implement outcome learning dataset and shadow calibration v1.
-- Previous accepted baseline: `77264f6d6f60218daa39528f7a7663f52e307e47` (documentation HEAD `99a112d44aab057534c8b3c7b0e79a2fc6b06d68`).
+- Production release SHA: `02d8c3e77e4122abe897792d056e76ed467bd9b8`.
+- UX feature commit: `05fad1e4adc7156d674528c569a88376abc2e304` — feat(telegram): explain risk in user-friendly language.
+- Release tooling fix: `02d8c3e77e4122abe897792d056e76ed467bd9b8` — fix(release): pass Docker label template on PowerShell.
+- Previous accepted baseline: `7bb62396d962551b1cb3cc78d60331d23f00c5b6` (documentation HEAD `ebc657a3a0efd64a8ee0b779b4151dcad99b5d5e`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Production image tag: `reels_bot:7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
-- Running image digest: `sha256:8115853f1e7ec473954943a9c56f0bbddd7009e102f3684b1986d0524267bbd1`.
-- Image build timestamp: `2026-09-06T20:04:44Z`.
-- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
+- Production image tag: `reels_bot:02d8c3e77e4122abe897792d056e76ed467bd9b8`.
+- Running image digest: `sha256:b91705f13b981c8b9240a3ce142d4f24e4b505270762f20664933d889ec9eed4`.
+- Image build timestamp: `2026-09-06T20:20:40Z`.
+- Runtime provenance: verified via `scripts/show_provenance.ps1`. OCI revision label, bot runtime identity, and worker runtime identity all match `02d8c3e77e4122abe897792d056e76ed467bd9b8`.
 
 ## Runtime
 
@@ -23,10 +24,21 @@ Stage: **Outcome Learning Dataset & Prioritization Calibration v1 — COMPLETE (
 - Redis 7, Telegram bot, and ARQ worker are running.
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video`, `cron:reap_stale_jobs`, and `cron:cron_audit_v2_jobs`.
-- Post-canary database: `4faf33f3-7f73-4f4b-a3f6-15fe3dfe47b0` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`643bb64f-cdb1-4eb5-9b76-65efc6695e28`, `PARTIALLY_DELIVERED`).
+- Post-canary database: `d7981580-0a2e-436d-beec-5640ce14f2ce` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`e20d6fab-3b0e-41de-938b-3fb7a32875ed`, `PARTIALLY_DELIVERED`).
 - Outcome learning tables: `outcome_observations` and `calibration_runs` initialized with schema indexes and unique constraints (`uq_outcome_observations_pub_horizon`).
 - Shadow mode verified: zero threshold mutations, zero prompt changes, `applied_recommendation_count = 0`.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
+
+## Telegram Human-Friendly Risk Explanation UX Patch
+
+- `TELEGRAM_LONG` remains the single production renderer used for Telegram user delivery.
+- Canonical risk enums, Router taxonomy, confidence scores, thresholds, fact-check policy, safety floors, persistence schema, and output variant contracts are unchanged.
+- User-facing risk levels are localized deterministically: `LOW` -> `Низкий`, `MEDIUM` -> `Средний`, `HIGH` -> `Высокий`; `CRITICAL` -> `Критический` is presentation-ready without widening the current Router enum.
+- All 14 production content labels and all 8 production intent labels have centralized Russian explanations.
+- Deterministic action guidance is defined for LOW, MEDIUM, HIGH, and forward-compatible CRITICAL.
+- Primary `TELEGRAM_LONG` hides classifier confidence percentages and technical label names; canonical/persisted `risk_reasons` retain the raw label and score strings.
+- MEDIUM/HIGH explanations explicitly state that the detected patterns are not a probability of fraud.
+- Unknown future labels render a safe generic explanation instead of failing.
 
 ## Outcome Learning Dataset & Prioritization Calibration v1 Architecture
 
@@ -70,8 +82,8 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 ## Automated test coverage
 
 - Canonical Clean Git Archive / Hosted CI pytest run:
-  - `372 collected`
-  - `372 passed`
+  - `389 collected`
+  - `382 passed`
   - `7 deselected`
   - `0 failed`
 - Replay evaluation suites (all 8 passing at 1.0, 131 tests passed):
@@ -86,18 +98,20 @@ This stage implements ROADMAP Priority 4: Outcome Learning Dataset & Prioritizat
 
 ## Verified live production canary
 
-- Deployment: 2026-09-07 03:05 ICT from clean release SHA `7bb62396d962551b1cb3cc78d60331d23f00c5b6`.
-- Canary job: `4faf33f3-7f73-4f4b-a3f6-15fe3dfe47b0`.
+- Deployment: 2026-09-07 03:21 ICT from clean release SHA `02d8c3e77e4122abe897792d056e76ed467bd9b8`.
+- Canary job: `d7981580-0a2e-436d-beec-5640ce14f2ce`.
 - Reel URL: `https://www.instagram.com/reel/Dc1oN9IuLys/` (user `392046103`).
 - Video validation: 720x1280 MP4, 12 keyframes visual evidence.
 - Transcription: `OK` via `gemini-3.5-transcribe` (2530 chars), no fallback.
 - Language: Russian (`ru`), confidence `0.9908`, mixed `false`, translation not required.
-- Router: `HOW_TO`, risk `MEDIUM`.
-- Priority: `overall_score=0.532`, decision `AMBIGUOUS_CONTINUE` (publish threshold 0.6 intact).
+- Router: `BUSINESS_IDEA`, risk `MEDIUM`; intents `PROMISE_RESULT`, `TEACH`, `PERSUADE`, `RECOMMEND`.
+- Priority: `overall_score=0.5575`, decision `AMBIGUOUS_CONTINUE` (publish threshold 0.6 intact).
 - Output Variants: 5 rendered (`TLDR`, `TELEGRAM_LONG`, `X_POST`, `THREADS_POST`, `YOUTUBE_COMMUNITY`), `all_valid=true`.
 - User Delivery: `SUCCEEDED` (`TELEGRAM_LONG`).
 - Channel Delivery: `SKIPPED_DUPLICATE` (dedup preserved).
-- Content Package Created: ID `643bb64f-cdb1-4eb5-9b76-65efc6695e28`, contract version `content_package_v1`.
+- Content Package Created: ID `e20d6fab-3b0e-41de-938b-3fb7a32875ed`, contract version `content_package_v1`.
+- Delivered risk block: `🟡 Риск: Средний`; four human-readable reasons; MEDIUM action guidance; no confidence percentages.
+- Persisted raw risk reasons: `PROMISE_RESULT (85%)`, `TEACH (80%)`, `PERSUADE (80%)`, `RECOMMEND (75%)`.
 - Outcome Learning & Shadow Calibration:
   - Database schema initialized: `outcome_observations` and `calibration_runs` tables verified.
   - Unique constraint `uq_outcome_observations_pub_horizon` enforced.
