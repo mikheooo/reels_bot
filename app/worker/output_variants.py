@@ -754,31 +754,22 @@ def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
     constraints = VARIANT_CONSTRAINTS[OutputVariantType.TELEGRAM_LONG]
     sections: list[str] = []
 
-    # 1. Compact title; 2. concise conclusion using two non-duplicated fields.
+    # 1. Compact title; 2-4. Preserve the three user-facing meaning blocks.
     sections.append(f"💡 **{render_human_title(canonical)}**")
-    conclusion = _compact_text(canonical.what_it_is, 320)
-    context = _compact_text(canonical.why_it_matters, 360)
-    conclusion_parts = [conclusion]
-    if context.casefold() != conclusion.casefold():
-        conclusion_parts.append(context)
-    sections.append("⚖️ **Короткий вывод**\n\n" + "\n\n".join(conclusion_parts))
+    sections.append("🧠 **Что это такое?**\n\n" + _compact_text(canonical.what_it_is, 320))
+    sections.append(
+        "🎯 **Зачем это знать?**\n\n" + _compact_text(canonical.why_it_matters, 360)
+    )
+    sections.append("⚖️ **Вердикт**\n\n" + _compact_text(canonical.summary, 420))
 
-    # Section 5: Human-readable risks and deterministic action guidance.
+    # 5. Keep risk compact. Classifier intent explanations remain available in
+    # canonical/debug data but are noise in the primary Telegram message.
     human_risk = render_human_risk_explanation(
         risk_level=canonical.risk_level,
         risk_or_intent_labels=canonical.risk_reasons,
         category=canonical.topic,
     )
     risk_sec = [f"{human_risk.icon} **Риск: {human_risk.localized_level.lower()}**"]
-    if human_risk.reasons:
-        risk_sec.append(
-            "**Почему:**\n" + "\n".join(f"• {reason}" for reason in human_risk.reasons)
-        )
-        if canonical.risk_level in {"MEDIUM", "HIGH"}:
-            risk_sec.append(
-                "_Это не означает, что ролик — обман. Это признаки того, что к его "
-                "обещаниям стоит относиться критически._"
-            )
     if canonical.critical_disclaimers:
         risk_sec.extend(canonical.critical_disclaimers)
     risk_sec.append(f"**Что делать:**\n{human_risk.guidance}")
@@ -806,17 +797,13 @@ def render_telegram_long(canonical: CanonicalContentResult) -> RenderedVariant:
     if len(fact_lines) > 1:
         sections.append("\n".join(fact_lines))
 
-    # 7. Human business model or, when Business Check was not selected by the
-    # existing policy, a plain-language meaning from the canonical verdict.
+    # 7. Human business model only when Business Check produced one. Without
+    # it, the restored verdict already carries the meaning without duplication.
     if canonical.business_summary:
         heading = _business_presentation_heading(canonical.business_summary)
         sections.append(
             f"💼 **{heading}**\n\n"
             + render_human_business_explanation(canonical.business_summary)
-        )
-    elif canonical.summary.strip():
-        sections.append(
-            "💼 **Что здесь за смысл**\n\n" + _compact_text(canonical.summary, 420)
         )
 
     # 8. One useful next step.

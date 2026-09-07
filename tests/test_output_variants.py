@@ -140,8 +140,9 @@ def test_telegram_long_generated_correctly():
     assert res.validation_passed
     assert res.character_count <= VARIANT_CONSTRAINTS[OutputVariantType.TELEGRAM_LONG].max_length
     assert "💡 **Быстрый старт бота**" in res.text
-    assert "Короткий вывод" in res.text
-    assert "Что здесь за смысл" in res.text
+    assert "Что это такое?" in res.text
+    assert "Зачем это знать?" in res.text
+    assert "Вердикт" in res.text
     assert "Разбор:" not in res.text
 
 
@@ -594,10 +595,9 @@ def test_legacy_telegram_behavior_not_bypassing_output_variant():
     assert mode == "TELEGRAM_LONG"
     assert delivery_text != legacy_raw
     assert "💡 **Уникальный Заголовок Регрессии**" in delivery_text
-    assert "⚖️ **Короткий вывод**" in delivery_text
-    assert "Что это такое?" not in delivery_text
-    assert "Зачем это знать?" not in delivery_text
-    assert "Вердикт:" not in delivery_text
+    assert "🧠 **Что это такое?**" in delivery_text
+    assert "🎯 **Зачем это знать?**" in delivery_text
+    assert "⚖️ **Вердикт**" in delivery_text
     assert "Риск: низкий" in delivery_text
 
 
@@ -658,7 +658,9 @@ def test_telegram_long_hides_confidence_but_preserves_structured_scores():
     assert "80%" not in rendered.text
     assert "75%" not in rendered.text
     assert "PROMISE_RESULT" not in rendered.text
-    assert "Автор обещает конкретный результат." in rendered.text
+    assert "Автор обещает конкретный результат." not in rendered.text
+    assert "**Почему:**" not in rendered.text
+    assert "**Что делать:**" in rendered.text
     assert canonical.risk_reasons == raw_reasons
     assert canonical.model_dump()["risk_reasons"] == [
         "PROMISE_RESULT (85%)",
@@ -766,12 +768,15 @@ def test_telegram_long_cleanup_for_kwork_example_preserves_metadata():
         assert internal_value not in text
     assert "Что здесь за бизнес-модель" in text
     assert "Автор предлагает найти клиента на Kwork" in text
-    assert "Это не означает, что ролик — обман." in text
+    assert "Автор обещает конкретный результат." not in text
+    assert "**Почему:**" not in text
     assert "Не удалось независимо подтвердить" in text
     assert "Пропустить материал" not in text
     assert "Если тема интересна, сначала освоить Яндекс Директ" in text
     assert text.count(source_url) == 1
-    assert text.index("Короткий вывод") < text.index("Риск: средний")
+    assert text.index("Что это такое?") < text.index("Зачем это знать?")
+    assert text.index("Зачем это знать?") < text.index("Вердикт")
+    assert text.index("Вердикт") < text.index("Риск: средний")
     assert text.index("Риск: средний") < text.index("Что удалось проверить")
     assert text.index("Что удалось проверить") < text.index("Что здесь за бизнес-модель")
     assert canonical.model_dump()["priority_tier"] == "AMBIGUOUS"
