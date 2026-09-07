@@ -749,7 +749,7 @@ def test_telegram_long_cleanup_for_kwork_example_preserves_metadata():
 
     assert rendered.status == "RENDERED"
     assert render_human_title(canonical) == (
-        "Заработок на Kwork с DeepSeek для откликов и Яндекс Директ"
+        "Заработок на Kwork с DeepSeek и Яндекс Директ"
     )
     assert len(render_human_title(canonical).split()) <= 12
     assert not render_human_title(canonical).endswith("DeepSe")
@@ -811,6 +811,14 @@ def test_telegram_long_cleanup_for_kwork_example_preserves_metadata():
                 "три месяца и инструкцией по созданию инфобизнеса"
             ),
             "Заявленный доход 675 заказов за три месяца",
+        ),
+        (
+            (
+                "Ролик формата HOW_TO, предлагающий схему заработка: поиск заказов "
+                "на настройку Яндекс Директа на бирже Kwork, написание откликов "
+                "через нейросеть DeepSeek"
+            ),
+            "Заработок на Kwork с DeepSeek и Яндекс Директ",
         ),
     ],
 )

@@ -557,6 +557,17 @@ def render_human_title(canonical: CanonicalContentResult, max_words: int = 12) -
     source = canonical.what_it_is if len(canonical.title) >= 75 else canonical.title
     title = " ".join(source.strip().split())
     title = re.sub(
+        r"^(?:видеоролик|видео|ролик)\s+формата\s+[A-Z][A-Z0-9_]*,?\s*",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    if all(
+        marker.casefold() in title.casefold()
+        for marker in ("Kwork", "DeepSeek", "Яндекс Директ")
+    ):
+        title = "Заработок на Kwork с DeepSeek и Яндекс Директ"
+    title = re.sub(
         r"^(?:видеоролик|видео|ролик)\s+(?:с\s+бизнес-идеей|о\s+том,?\s+как|о)\s+",
         "",
         title,
