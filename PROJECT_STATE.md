@@ -1,13 +1,14 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 11:06 ICT
+Snapshot: 2026-09-07 11:16 ICT
 
 Stage: **Telegram Analysis UX: Real-World Readability Validation v1 — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `5188a574f01452975beb3a6ee8cc21f61c7de674`.
+- Production release SHA: `6d740c02ee9d52b0fca1895fa9d74761e27ae3e7`.
+- Telegram meaning/risk UX follow-up: `6d740c02ee9d52b0fca1895fa9d74761e27ae3e7` — restores `Что это такое?`, `Зачем это знать?`, and `Вердикт`; removes classifier-intent explanations from the primary risk block.
 - Telegram readability implementation commits: `14d03dbc3c0a4a8fc21cc96cb52e0304d9a979e2` and follow-up `5188a574f01452975beb3a6ee8cc21f61c7de674`.
 - Priority 5 Slice 2 implementation commit: `9884797b303a046459f4d8d312768e311772f54a` — feat(publish): enforce strict reconciliation confidence, timestamp deduplication, and accurate idempotency capabilities (initial slice commit `cfad61dd512f6258fd00d849a988eb7ac589f590`).
 - Priority 5 Slice 1 implementation commit: `4bc9fa7b268388dff1a98e3c79c8e375b5022d7e` (documentation HEAD `b819457b5d3bd1e82d150fc87a0896707c88ad9d`).
@@ -18,10 +19,10 @@ Stage: **Telegram Analysis UX: Real-World Readability Validation v1 — COMPLETE
 - Release tooling fix: `02d8c3e77e4122abe897792d056e76ed467bd9b8` — fix(release): pass Docker label template on PowerShell.
 - Previous production baseline: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836` (documentation HEAD `3004fe321a64594b559d3cd11fc10310602bf932`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Production image tag: `reels_bot:5188a574f01452975beb3a6ee8cc21f61c7de674`.
-- Running image ID: `sha256:80285a2252b3f08ff06454d9acd7dfe0d939c4a81bdee8a46e13d92e08393811`.
-- Image build timestamp: `2026-09-07T04:02:44Z`.
-- Runtime provenance: OCI revision label, actual bot/worker container image IDs, image tag, and both runtime identities match `5188a574f01452975beb3a6ee8cc21f61c7de674`.
+- Production image tag: `reels_bot:6d740c02ee9d52b0fca1895fa9d74761e27ae3e7`.
+- Running image ID: `sha256:8a6fcfebacb1eace2bde50900ab5b319cb5bad030ea46602cb5623c1fe0ace26`.
+- Image build timestamp: `2026-09-07T04:14:44Z`.
+- Runtime provenance: OCI revision label, actual bot/worker container image IDs, image tag, and both runtime identities match `6d740c02ee9d52b0fca1895fa9d74761e27ae3e7`.
 
 ## Runtime
 
