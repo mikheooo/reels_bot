@@ -29,7 +29,8 @@ The pipeline enforces:
 | **Required Scopes** | `tweet.read`, `tweet.write`, `users.read` |
 | **Text Character Limit** | 280 standard characters (handled by `X_POST` constraint of <= 280 chars) |
 | **Rate Limits** | Header-driven (`x-rate-limit-limit`, `x-rate-limit-remaining`, `x-rate-limit-reset`, `Retry-After`); tier defaults (17-200+ tweets/24h or 15-min window) as documented fallbacks |
-| **Native Idempotency** | Supported via client request or application-level `publication_key` |
+| **Native Idempotency** | `False` (public `POST /2/tweets` endpoint provides no client-side idempotency parameter; idempotency is strictly orchestrator-managed via `publication_key`) |
+| **Orchestrator-Managed Idempotency** | `True` (immutable `publication_key` prevents duplicate attempts) |
 | **Capability Status** | `CONNECTED_SUPPORTED` (when credentials set) / `SUPPORTED_NOT_CONFIGURED` (default) |
 
 ### 2. Meta Threads Graph API
@@ -45,6 +46,8 @@ The pipeline enforces:
 | **Required Scopes** | `threads_basic`, `threads_content_publish` |
 | **Text Character Limit** | 500 characters (handled by `THREADS_POST` constraint of <= 500 chars) |
 | **Rate Limits** | Header-driven (`Retry-After`, usage headers); 250 published posts per 24-hour rolling window as documented fallback |
+| **Native Idempotency** | `False` (Meta Threads Graph API exposes no client-side idempotency parameter; idempotency is strictly orchestrator-managed via `publication_key`) |
+| **Orchestrator-Managed Idempotency** | `True` (immutable `publication_key` prevents duplicate attempts) |
 | **Capability Status** | `CONNECTED_SUPPORTED` (when credentials set) / `SUPPORTED_NOT_CONFIGURED` (default) |
 
 ### 3. YouTube Community Posts
@@ -146,13 +149,14 @@ class PublicationIntent(BaseModel):
 - Before executing a network request, `execute_publication_intents` re-computes `compute_payload_hash(current_variant_text)`.
 - If `current_hash != intent.payload_hash`, the intent transitions to `APPROVAL_STALE` and network dispatch is aborted.
 
-### 3. Invariant: Ambiguous Result Reconciliation
+### 3. Invariant: Ambiguous Result Reconciliation & Confidence Model
 - When a POST request to an external provider times out or drops the connection after sending the payload, the publication outcome is ambiguous (the post may have been created on the server before the connection dropped).
-- The connector catches timeout exceptions and enters reconciliation mode:
-  - For X: Queries `GET https://api.x.com/2/users/me/tweets?max_results=5&tweet.fields=text` for recent user tweets matching payload.
-  - For Threads: Queries `GET /{user-id}/threads?limit=5` for recent media.
-- If the post is confirmed present: recovers `provider_post_id` and marks `SUCCEEDED` without re-posting.
-- If confirmed absent: marks error as retryable for scheduled backoff.
+- The connector enters reconciliation mode using the typed `ReconciliationConfidence` model:
+  - `CONFIRMED_PRESENT`: Text match verified within the attempt window (`created_at >= attempt_started_at - 120s`). Recovers `provider_post_id`, marks intent `SUCCEEDED`, and eliminates duplicate posts.
+  - `CONFIRMED_ABSENT`: Definitive authoritative negative assertion from the provider (e.g. manual-only connectors or guaranteed authoritative lookups). Permits scheduled retry backoff if retry attempts remain.
+  - `INCONCLUSIVE`: Bounded query (e.g. recent 5 posts) did NOT find the post, or only matched older posts created prior to the attempt window. Because eventual consistency, replication lag, or timeline indexing delays can cause newly created posts to be temporarily invisible, absence cannot be proven.
+- **Strict Inconclusive Safety**: `INCONCLUSIVE` results NEVER trigger automatic retry. The intent remains frozen in `DELIVERY_UNKNOWN` and the overall plan transitions to `MANUAL_RECONCILIATION_REQUIRED`.
+- **Duplicate-Text Protection**: Older posts with identical text are excluded via timestamp windowing (`post_ts < attempt_started_at - 120s`), preventing accidental attribution to previous publications. Zero false-positive attributions.
 
 ### 4. Invariant: Provider Account Identity Guard
 - Credentials might point to an incorrect personal account instead of the authorized brand handle.
@@ -273,7 +277,8 @@ Priority 5 Slice 2 elevates **Meta Threads** (`TargetPlatform.THREADS`) to full 
 | **Supports Delete** | `True` (`DELETE /2/tweets/{id}`) | `False` (not in public Graph API) | `False` |
 | **Supports Lookup** | `True` (`GET /2/tweets/{id}`) | `True` (`GET /{threads-media-id}`) | `False` |
 | **Supports Timeline Reconciliation** | `True` (`GET /2/users/me/tweets?max_results=5`) | `True` (`GET /{user-id}/threads?limit=5`) | `False` |
-| **Supports Native Idempotency** | `True` (API level / publication_key) | `False` (orchestrator managed) | `False` |
+| **Supports Native Idempotency** | `False` | `False` | `False` |
+| **Orchestrator Managed Idempotency** | `True` | `True` | `False` |
 | **Max Media Count** | 0 | 0 | 0 |
 | **Supported MIME Types** | `["text/plain"]` | `["text/plain"]` | `["text/plain"]` |
 | **Rate Limit Model** | `header_driven_x_rate_limit_or_tier_fallback` | `header_driven_threads_250_rolling_24h` | `none_manual_export` |
@@ -295,14 +300,16 @@ A multi-platform plan is never reduced to a simplistic binary boolean. The aggre
 7. **`TERMINAL_FAILURE`**: All active targets permanently failed with zero successes.
 8. **`CANCELLED`**: The plan or package was explicitly revoked/cancelled.
 
-### 5. Threads Ambiguity Reconciliation
+### 5. Threads Ambiguity Reconciliation & Confidence Protocol
 When a Threads publication attempt experiences a network timeout or connection reset:
 1. Transition intent to `DELIVERY_UNKNOWN`.
 2. Inspect `reconcile_ambiguous_delivery()`:
    - If `provider_post_id` is present, look up the media container via `GET /{threads-media-id}`.
-   - If missing `provider_post_id`, query recent threads via `GET /{user-id}/threads?limit=5&fields=id,text,permalink`.
-   - If the approved snippet matches a recent post, resolve as `resolved=True, published=True` and mark `SUCCEEDED` without re-posting.
-   - If definitively not in the recent timeline, resolve as `resolved=True, published=False` and permit scheduled retry.
-   - If the query fails or returns an uncertain response, resolve as `resolved=False, published=False` and escalate to `MANUAL_RECONCILIATION_REQUIRED` to eliminate any risk of blind duplicate posts.
+   - If missing `provider_post_id`, query recent threads via `GET /{user-id}/threads?limit=5&fields=id,text,permalink,timestamp`.
+   - **Timestamp Window Filtering**: Posts with timestamps older than `attempt_started_at - 120s` are discarded as prior identical publications.
+   - If matching text is found within the valid timestamp window: evaluates to `ReconciliationConfidence.CONFIRMED_PRESENT` (`resolved=True, published=True`), resolves `provider_post_id`, and transitions to `SUCCEEDED` without re-posting.
+   - If definitively absent via authoritative provider confirmation: evaluates to `ReconciliationConfidence.CONFIRMED_ABSENT` and schedules retry.
+   - If not found in the bounded 5-post query or only matched older duplicate posts: evaluates strictly to `ReconciliationConfidence.INCONCLUSIVE` (`resolved=False, published=False`). Because timeline indexing delays or replication lag cannot definitively prove absence, automatic retry is prohibited. The intent remains frozen in `DELIVERY_UNKNOWN` and the overall plan status transitions to `MANUAL_RECONCILIATION_REQUIRED`.
+   - Zero blind reposts, zero duplicate publications, and zero false-positive duplicate text attributions.
 
 

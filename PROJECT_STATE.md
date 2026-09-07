@@ -1,6 +1,6 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 05:35 ICT
+Snapshot: 2026-09-07 07:20 ICT
 
 Stage: **Automatic Publication — Multi-Platform Publication Expansion & Connector Parity (Slice 2) — COMPLETE**
 
@@ -8,7 +8,7 @@ Stage: **Automatic Publication — Multi-Platform Publication Expansion & Connec
 
 - Branch: `main`.
 - Production release SHA: `75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
-- Priority 5 Slice 2 implementation commit: `cfad61dd512f6258fd00d849a988eb7ac589f590` — feat(publish): expand multi-platform orchestrator with Threads connector parity.
+- Priority 5 Slice 2 implementation commit: `9884797b303a046459f4d8d312768e311772f54a` — feat(publish): enforce strict reconciliation confidence, timestamp deduplication, and accurate idempotency capabilities (initial slice commit `cfad61dd512f6258fd00d849a988eb7ac589f590`).
 - Priority 5 Slice 1 implementation commit: `4bc9fa7b268388dff1a98e3c79c8e375b5022d7e` (documentation HEAD `b819457b5d3bd1e82d150fc87a0896707c88ad9d`).
 - Telegram UX feature commit: `6f39e99f5ea5e8d84fadf2acd3356d432a4b9141` — feat(telegram): simplify analysis presentation.
 - Telegram UX follow-up commit: `75780f49fc41052f78c7c525a2fc90fb1e7f02f7` — fix(telegram): preserve meaning without business check.
@@ -148,7 +148,8 @@ This stage implements ROADMAP Priority 5 / Slice 2: Multi-Platform Publication E
    - YouTube Community strictly preserved at `UNSUPPORTED_OFFICIAL_API` / `MANUAL_EXPORT_READY` (zero headless browser automation).
 
 2. **Connector Capability Model (`ConnectorCapabilities`)**:
-   - Standardized capabilities: `supports_text`, `supports_image`, `supports_video`, `supports_edit`, `supports_delete`, `supports_lookup`, `supports_timeline_reconciliation`, `supports_native_idempotency`, `max_media_count`, `supported_mime_types`, `rate_limit_model`.
+   - Standardized capabilities: `supports_text`, `supports_image`, `supports_video`, `supports_edit`, `supports_delete`, `supports_lookup`, `supports_timeline_reconciliation`, `supports_native_idempotency`, `orchestrator_managed_idempotency`, `max_media_count`, `supported_mime_types`, `rate_limit_model`.
+   - **Native Idempotency Audit**: Accurately audited and established that neither X API v2 (`POST /2/tweets`) nor Meta Threads Graph API (`POST /{user-id}/threads_publish`) accept client-side native idempotency tokens. Declared `supports_native_idempotency=False` across all platforms, while declaring `orchestrator_managed_idempotency=True` for X and Threads to reflect application-level deterministic deduplication via immutable `publication_key`.
    - Preflight enforcement: `PublicationOrchestrator.execute_intent` inspects capabilities prior to network dispatch, rejecting unsupported modalities (`CAPABILITY_UNSUPPORTED`) and character over-budget text (`BUDGET_EXCEEDED`).
 
 3. **Cryptographic Integrity Hash & Target-Set Binding**:
@@ -159,10 +160,13 @@ This stage implements ROADMAP Priority 5 / Slice 2: Multi-Platform Publication E
    - Distinct statuses: `ALL_PENDING`, `ATTEMPTING`, `MANUAL_RECONCILIATION_REQUIRED`, `RETRY_PENDING`, `ALL_SUCCEEDED`, `PARTIAL_SUCCESS`, `TERMINAL_FAILURE`, `CANCELLED`.
    - Aggregated via `calculate_aggregate_plan_status(plan)`. A multi-platform plan is never collapsed into a single boolean.
 
-5. **Threads Ambiguity Reconciliation**:
-   - Ambiguous timeouts / dropped connections trigger `reconcile_ambiguous_delivery`.
-   - Queries `GET /{user-id}/threads?limit=5` comparing text snippets. If confirmed present, resolves `provider_post_id` and marks `SUCCEEDED` without re-posting; if confirmed absent, permits retry; if inconclusive, sets `MANUAL_RECONCILIATION_REQUIRED`.
-   - Zero blind reposts.
+5. **Threads Ambiguity Reconciliation & Strict 3-Valued Confidence Protocol**:
+   - Ambiguous timeouts / dropped connections trigger `reconcile_ambiguous_delivery` returning typed `ReconciliationConfidence` (`CONFIRMED_PRESENT`, `CONFIRMED_ABSENT`, `INCONCLUSIVE`).
+   - **Duplicate-Text Window Protection**: Recent posts are compared against `intent.attempt_started_at - 120s`. Posts created prior to this window are logged and skipped, eliminating false-positive attributions to earlier identical publications.
+   - If matching text is verified within the window: evaluates to `CONFIRMED_PRESENT`, resolves `provider_post_id`, and transitions to `SUCCEEDED` without re-posting.
+   - If confirmed absent by authoritative provider verification: evaluates to `CONFIRMED_ABSENT` and permits scheduled exponential retry.
+   - If not found in the bounded 5-post query or only matched older posts: evaluates strictly to `INCONCLUSIVE`. Because timeline indexing latency and replication delays prevent proving negative delivery, automatic retry is prohibited. The intent remains frozen in `DELIVERY_UNKNOWN` and aggregate plan status is set to `MANUAL_RECONCILIATION_REQUIRED`.
+   - Zero blind reposts, zero duplicate publications, and zero false-positive duplicate text attributions.
 
 6. **Controlled External Validation**:
    - Deterministic mocked provider contract validation across all 19 replay evaluation scenarios.
@@ -172,12 +176,15 @@ This stage implements ROADMAP Priority 5 / Slice 2: Multi-Platform Publication E
 ## Automated test coverage
 
 - Canonical Non-Integration Pytest run:
-  - `433 collected`
-  - `426 passed`
+  - `441 collected`
+  - `434 selected`
+  - `433 passed`
+  - `1 skipped` (`test_visual_evidence.py` sample video outside clean git archive)
   - `7 deselected`
   - `0 failed`
-- Replay evaluation suites (all 9 passing at 1.0, 166 tests passed):
-  - **Publication Replay**: **19 deterministic scenarios** (`tests/fixtures/publication_eval.json`); focused test suite: **34 passed** (`tests/test_publication_orchestration.py`); clean `git archive` verification: **34 passed**; unauthorized publications: `0`, duplicate publications: `0`, stale approval publications: `0`, blind reposts: `0`, platform isolation preserved: `True`, terminal state correctness: `1.0`, credential leaks: `0`, all 7 gates passed: `True`.
+  - `17 warnings`
+- Replay evaluation suites (all 9 passing at 1.0, 174 tests passed):
+  - **Publication Replay**: **19 deterministic scenarios** (`tests/fixtures/publication_eval.json`); focused test suite: **42 passed** (`tests/test_publication_orchestration.py`); clean `git archive` verification: **433 passed, 1 skipped, 7 deselected, 0 failed, 17 warnings**; clean-archive Ruff check: `All checks passed!`; unauthorized publications: `0`, duplicate publications: `0`, stale approval publications: `0`, blind reposts: `0`, platform isolation preserved: `True`, terminal state correctness: `1.0`, credential leaks: `0`, all 7 gates passed: `True`.
   - **Outcome Learning Replay**: **14 deterministic scenarios** (`tests/fixtures/outcome_learning_eval.json`); zero cross-horizon pooling: `0`, zero fake zero denominators: `0`, data sufficiency enforced: `True`, outlier isolation: `True`, zero automatic policy mutations: `0`, immutable safety floor preserved: `True`, lineage integrity: `True`, all 7 gates passed: `True`.
   - **Audit Replay**: **13 deterministic scenarios** (`tests/fixtures/audit_eval.json`); `auth_mistaken_for_deletion`: `0`, `duplicate_snapshots`: `0`, `unsupported_fake_verification`: `0`, `overdue_pollution_for_unavailable_connectors`: `0`, all gates passed: `True`.
   - **Connector Replay**: **13 deterministic scenarios** (`tests/fixtures/connector_eval.json`); unauthorized publications: `0`, duplicate logical publications: `0`, stale approvals published: `0`, fake successes: `0`, retry correctness: `1.0`, all gates passed: `True`.
