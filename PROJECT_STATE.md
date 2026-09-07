@@ -1,13 +1,14 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 07:20 ICT
+Snapshot: 2026-09-07 11:06 ICT
 
-Stage: **Automatic Publication — Multi-Platform Publication Expansion & Connector Parity (Slice 2) — COMPLETE**
+Stage: **Telegram Analysis UX: Real-World Readability Validation v1 — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
+- Production release SHA: `5188a574f01452975beb3a6ee8cc21f61c7de674`.
+- Telegram readability implementation commits: `14d03dbc3c0a4a8fc21cc96cb52e0304d9a979e2` and follow-up `5188a574f01452975beb3a6ee8cc21f61c7de674`.
 - Priority 5 Slice 2 implementation commit: `9884797b303a046459f4d8d312768e311772f54a` — feat(publish): enforce strict reconciliation confidence, timestamp deduplication, and accurate idempotency capabilities (initial slice commit `cfad61dd512f6258fd00d849a988eb7ac589f590`).
 - Priority 5 Slice 1 implementation commit: `4bc9fa7b268388dff1a98e3c79c8e375b5022d7e` (documentation HEAD `b819457b5d3bd1e82d150fc87a0896707c88ad9d`).
 - Telegram UX feature commit: `6f39e99f5ea5e8d84fadf2acd3356d432a4b9141` — feat(telegram): simplify analysis presentation.
@@ -17,10 +18,10 @@ Stage: **Automatic Publication — Multi-Platform Publication Expansion & Connec
 - Release tooling fix: `02d8c3e77e4122abe897792d056e76ed467bd9b8` — fix(release): pass Docker label template on PowerShell.
 - Previous production baseline: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836` (documentation HEAD `3004fe321a64594b559d3cd11fc10310602bf932`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Production image tag: `reels_bot:75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
-- Running image digest: `sha256:b14cb36d3a027b53ba7b66f2f0a9a305013a4b8e4f23d092e5d83f89c5324675`.
-- Image build timestamp: `2026-09-06T21:15:14Z`.
-- Runtime provenance: OCI revision label, bot runtime identity, and worker runtime identity all match `75780f49fc41052f78c7c525a2fc90fb1e7f02f7`.
+- Production image tag: `reels_bot:5188a574f01452975beb3a6ee8cc21f61c7de674`.
+- Running image ID: `sha256:80285a2252b3f08ff06454d9acd7dfe0d939c4a81bdee8a46e13d92e08393811`.
+- Image build timestamp: `2026-09-07T04:02:44Z`.
+- Runtime provenance: OCI revision label, actual bot/worker container image IDs, image tag, and both runtime identities match `5188a574f01452975beb3a6ee8cc21f61c7de674`.
 
 ## Runtime
 
@@ -29,10 +30,25 @@ Stage: **Automatic Publication — Multi-Platform Publication Expansion & Connec
 - Redis 7, Telegram bot, and ARQ worker are running.
 - Bot identity guard verified `@Reeelsanalyzerbot` before polling.
 - Worker registers `process_video`, `cron:reap_stale_jobs`, and `cron:cron_audit_v2_jobs`.
-- Post-canary database: `dcec0b41-dd28-404d-b818-adf78b025c77` verified (`status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`), `ContentPackageModel` (`8fd21975-836a-42e3-a4aa-263f1f1bc7a7`, `PARTIALLY_DELIVERED`).
+- Final readability canary: job `593c6d98-7e6a-47c0-97e4-9f246bb28ad0`, package `93a32a8b-dd04-480c-aef0-eaa7e6c74d66`; `status=DONE`, `user=SUCCEEDED`, `content_package=CREATED`, `output_variants=SUCCEEDED`.
 - Outcome learning tables: `outcome_observations` and `calibration_runs` initialized with schema indexes and unique constraints (`uq_outcome_observations_pub_horizon`).
 - Shadow mode verified: zero threshold mutations, zero prompt changes, `applied_recommendation_count = 0`.
 - Queue depth is zero; no `QUEUED` or `PROCESSING` job remains from the canary.
+
+## Telegram Analysis UX: Real-World Readability Validation v1
+
+- Reviewed 12 real production analyses: 2 persisted production `TELEGRAM_LONG` messages and 10 read-only replays from real stored transcripts/analysis data through the deployed pipeline.
+- Covered business/income, how-to, products/services, finance-related claims, education, job search, informational content, business-check/no-business-check, LOW/MEDIUM risk, confirmed facts, and unverified claims.
+- Production history did not provide suitable typed health/wellness, travel/lifestyle, or HIGH-risk samples. This remains an explicit coverage gap; no synthetic sample was counted as real-world evidence.
+- Confirmed deterministic defects were incomplete/repetitive titles, neutral intents presented as risk reasons, LOW-risk overstatement, ignored normalized Russian claim text, educational content mislabeled as a business model, and residual skip wording.
+- Presentation fixes are limited to `TELEGRAM_LONG` title/risk/fact/business-heading/next-step rendering. Router decisions, Priority scores and thresholds, risk classification, Business/Fact Check semantics, persistence, lifecycle, delivery, audit, and telemetry remain unchanged.
+- Pre-change findings and per-sample evidence: `docs/telegram_readability_validation_v1.md`.
+- Final canary title: `Заработок на Kwork с DeepSeek и Яндекс Директ` (9 words); no prohibited enum/score labels; one inline factual source link; Telegram user delivery succeeded.
+- Link previews are disabled by the production Bot API payload. No Telegram-client screenshot was captured, so visual client rendering is not claimed.
+- Regression: targeted renderer/router suite `75 passed`; output replay `2 passed`; Router replay `1 passed`; Router + Priority replay `1 passed`; multilingual replay `1 passed`; current `tests/` suite `360 passed`; Ruff `All checks passed!`.
+- An unfiltered repository-root test discovery also exercised legacy live scripts: `438 passed`, `4 failed`; three failures used the intentionally invalid `dummy_gemini_key`, and one PostgreSQL integration test hit a Windows event-loop teardown error. These are outside the deterministic offline suite and were not represented as a green full run.
+- Release CI for `5188a574f01452975beb3a6ee8cc21f61c7de674`: `https://github.com/mikheooo/reels_bot/actions/runs/34081639390` (`success`).
+- Deployment provenance incident: an earlier canary was rejected when actual container image IDs exposed an old image despite new environment metadata. Final deployment requires and passed exact image-ID equality for tag, bot, and worker.
 
 ## Gemini Key Rotation Priority Consistency Patch
 

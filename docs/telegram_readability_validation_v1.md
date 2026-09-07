@@ -36,3 +36,12 @@ Validation date: 2026-09-07 ICT
 5. Remove deterministic `иначе пропустить`/`пропустить материал` recommendation fragments wherever they occur.
 
 Router, Priority, risk classification/thresholds, Business classifier, Fact Check semantics, persistence, lifecycle, delivery, audit, and telemetry are outside this patch.
+
+## Deployment validation
+
+- The first attempted canary (`db0575c5-326f-4e20-bef9-00243913cf85`) was rejected as evidence because Docker inspection proved the containers still used the previous image even though runtime environment metadata contained the new SHA.
+- A canary on `14d03dbc3c0a4a8fc21cc96cb52e0304d9a979e2` (`41cf4560-5373-42f8-8c03-c85752687d69`) confirmed the main cleanup but exposed one remaining deterministic leak: `Ролик формата HOW_TO` in the title.
+- The follow-up presentation-only fix strips that routed format prefix and composes the Kwork/DeepSeek/Яндекс Директ subject title from already available canonical text. No extra LLM call was added.
+- Final production canary: job `593c6d98-7e6a-47c0-97e4-9f246bb28ad0`, package `93a32a8b-dd04-480c-aef0-eaa7e6c74d66`, `DONE`, Telegram user delivery `SUCCEEDED`.
+- Delivered title: `Заработок на Kwork с DeepSeek и Яндекс Директ` (9 words). The persisted `TELEGRAM_LONG` contains none of the prohibited enum/score labels and contains one inline source URL with no duplicate raw source card.
+- Link previews are disabled in the production Bot API payload with `LinkPreviewOptions(is_disabled=True)`. The database delivery result proves message delivery, not a visual Telegram-client screenshot.
