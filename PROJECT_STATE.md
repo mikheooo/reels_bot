@@ -1,13 +1,14 @@
 # REELS_BOT — canonical project state
 
-Snapshot: 2026-09-07 11:16 ICT
+Snapshot: 2026-09-07 11:28 ICT
 
 Stage: **Telegram Analysis UX: Real-World Readability Validation v1 — COMPLETE**
 
 ## Release identity
 
 - Branch: `main`.
-- Production release SHA: `6d740c02ee9d52b0fca1895fa9d74761e27ae3e7`.
+- Production release SHA: `284f16e9701d47c9a4b85c9eb237fc1a28a47ce4`.
+- Telegram idea-validation action: `284f16e9701d47c9a4b85c9eb237fc1a28a47ce4` — adds an explicit `🧪 Проверить идею` button that creates one owner-scoped, idempotent dashboard task from persisted canonical data.
 - Telegram meaning/risk UX follow-up: `6d740c02ee9d52b0fca1895fa9d74761e27ae3e7` — restores `Что это такое?`, `Зачем это знать?`, and `Вердикт`; removes classifier-intent explanations from the primary risk block.
 - Telegram readability implementation commits: `14d03dbc3c0a4a8fc21cc96cb52e0304d9a979e2` and follow-up `5188a574f01452975beb3a6ee8cc21f61c7de674`.
 - Priority 5 Slice 2 implementation commit: `9884797b303a046459f4d8d312768e311772f54a` — feat(publish): enforce strict reconciliation confidence, timestamp deduplication, and accurate idempotency capabilities (initial slice commit `cfad61dd512f6258fd00d849a988eb7ac589f590`).
@@ -19,10 +20,10 @@ Stage: **Telegram Analysis UX: Real-World Readability Validation v1 — COMPLETE
 - Release tooling fix: `02d8c3e77e4122abe897792d056e76ed467bd9b8` — fix(release): pass Docker label template on PowerShell.
 - Previous production baseline: `7e7a156e16a2cb9dc750b7a815fc80e4bdf12836` (documentation HEAD `3004fe321a64594b559d3cd11fc10310602bf932`).
 - Remote: `origin` = `https://github.com/mikheooo/reels_bot.git`.
-- Production image tag: `reels_bot:6d740c02ee9d52b0fca1895fa9d74761e27ae3e7`.
-- Running image ID: `sha256:8a6fcfebacb1eace2bde50900ab5b319cb5bad030ea46602cb5623c1fe0ace26`.
-- Image build timestamp: `2026-09-07T04:14:44Z`.
-- Runtime provenance: OCI revision label, actual bot/worker container image IDs, image tag, and both runtime identities match `6d740c02ee9d52b0fca1895fa9d74761e27ae3e7`.
+- Production image tag: `reels_bot:284f16e9701d47c9a4b85c9eb237fc1a28a47ce4`.
+- Running image ID: `sha256:fe9736dd27f0d1798575f1ff14189442b96408ad3330b281a232d2e8bb3a81ff`.
+- Image build timestamp: `2026-09-07T04:26:25Z`.
+- Runtime provenance: OCI revision label, actual bot/worker container image IDs, image tag, and both runtime identities match `284f16e9701d47c9a4b85c9eb237fc1a28a47ce4`.
 
 ## Runtime
 
@@ -50,6 +51,14 @@ Stage: **Telegram Analysis UX: Real-World Readability Validation v1 — COMPLETE
 - An unfiltered repository-root test discovery also exercised legacy live scripts: `438 passed`, `4 failed`; three failures used the intentionally invalid `dummy_gemini_key`, and one PostgreSQL integration test hit a Windows event-loop teardown error. These are outside the deterministic offline suite and were not represented as a green full run.
 - Release CI for `5188a574f01452975beb3a6ee8cc21f61c7de674`: `https://github.com/mikheooo/reels_bot/actions/runs/34081639390` (`success`).
 - Deployment provenance incident: an earlier canary was rejected when actual container image IDs exposed an old image despite new environment metadata. Final deployment requires and passed exact image-ID equality for tag, bot, and worker.
+
+## Telegram explicit idea validation task
+
+- Every analysis keyboard now exposes `🧪 Проверить идею`; no task is created until the owner explicitly presses it.
+- The callback locks the source job, verifies owner identity, reads the latest persisted canonical package, and creates a single `PENDING` task. Repeated presses return the existing-task notice instead of adding a duplicate.
+- Task generation is deterministic and adds no LLM call. It records a safe validation plan: inspect current offers/orders, capture actual requirements, compare them with skills and official sources, run a low-commitment test, then make a go/learn/stop decision.
+- Deployed Kwork dry validation produced `Проверить идею: Заработок на Kwork с DeepSeek и Яндекс Директ` and the expected callback without writing a task on the user's behalf.
+- Validation: targeted bot/output tests `53 passed`; maintained `tests/` suite `361 passed`; Ruff `All checks passed!`.
 
 ## Gemini Key Rotation Priority Consistency Patch
 
