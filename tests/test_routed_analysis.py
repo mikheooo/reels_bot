@@ -2,9 +2,10 @@ import json
 
 import pytest
 
-from app.bot.analysis_view import analysis_keyboard
+from app.bot.analysis_view import analysis_keyboard, build_idea_validation_task
 from app.worker.compact_renderer import build_detail_sections, render_compact_analysis
 from app.worker.content_router import RouterDecision, policy_for
+from app.worker.output_variants import CanonicalContentResult
 from app.worker.personal_context import load_personal_context
 from app.worker.specialized_analysis import (
     SpecializedAnalysis,
@@ -90,6 +91,29 @@ def test_details_and_buttons_are_conditional():
     assert "detail:tech:123" in callback_data
     assert "detail:fact:123" not in callback_data
     assert "full:123" in callback_data
+    assert "idea_task:123" in callback_data
+
+
+def test_idea_validation_task_is_safe_and_uses_canonical_subject():
+    canonical = CanonicalContentResult(
+        title="Заработок на Kwork с DeepSeek и Яндекс Директ",
+        topic="How To",
+        summary="Проверяемая гипотеза заработка.",
+        what_it_is="Поиск заказов на настройку Яндекс Директа через Kwork.",
+        why_it_matters="Наличие объявлений ещё не доказывает работоспособность схемы.",
+        actionable_steps=["Проверить актуальные объявления и требования заказчиков."],
+        risk_level="MEDIUM",
+    )
+
+    title, description = build_idea_validation_task(
+        canonical.model_dump(mode="json"), "https://example.test/reel"
+    )
+
+    assert title == "Проверить идею: Заработок на Kwork с DeepSeek и Яндекс Директ"
+    assert "Найти актуальные предложения или заказы" in description
+    assert "без обязательств перед клиентами" in description
+    assert "Проверить актуальные объявления" in description
+    assert "https://example.test/reel" in description
 
 
 def test_routed_task_preserves_explicit_title():

@@ -7,13 +7,17 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from sqlalchemy import select
 
-from app.bot.analysis_view import DETAIL_LABELS, analysis_keyboard
+from app.bot.analysis_view import (
+    DETAIL_LABELS,
+    analysis_keyboard,
+    build_idea_validation_task,
+)
 from app.bot.package_handlers import handle_package_callback
 from app.bot.transcript_view import LEGACY_TEXT, send_full_transcript, transcript_button
 from app.core.config import settings
 from app.core.normalizer import clean_url, is_valid_url
 from app.db.database import AsyncSessionLocal
-from app.db.models import Job, Task
+from app.db.models import ContentPackageModel, Job, Task
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -179,6 +183,66 @@ async def task_cycle(callback: types.CallbackQuery):
             )
         ]])
     await callback.message.edit_text(f"{emoji} {task.title}", reply_markup=new_kb)
+
+
+@router.callback_query(F.data.startswith("idea_task:"))
+async def create_idea_validation_task(callback: types.CallbackQuery):
+    """Create one owner-scoped dashboard task for validating a Reel idea."""
+    job_id = callback.data.split(":", 1)[1]
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Job).where(Job.id == job_id).with_for_update()
+        )
+        job = result.scalar_one_or_none()
+        if not job:
+            await callback.answer("Анализ не найден.", show_alert=True)
+            return
+        if not callback.from_user or callback.from_user.id != job.user_id:
+            await callback.answer("Эта задача относится к другому пользователю.", show_alert=True)
+            return
+
+        package_result = await session.execute(
+            select(ContentPackageModel)
+            .where(ContentPackageModel.job_id == job_id)
+            .order_by(ContentPackageModel.created_at.desc())
+            .limit(1)
+        )
+        package = package_result.scalar_one_or_none()
+        if not package or not isinstance(package.canonical_content, dict):
+            await callback.answer(
+                "Для этого старого анализа не сохранились данные задачи.",
+                show_alert=True,
+            )
+            return
+
+        title, description = build_idea_validation_task(
+            package.canonical_content, job.original_url
+        )
+        existing_result = await session.execute(
+            select(Task).where(
+                Task.job_id == job_id,
+                Task.user_id == job.user_id,
+                Task.title == title,
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing:
+            await callback.answer("Эта проверка уже есть в задачах.")
+            return
+
+        task = Task(
+            id=str(uuid.uuid4()),
+            job_id=job_id,
+            user_id=job.user_id,
+            title=title,
+            description=description,
+            status="PENDING",
+        )
+        session.add(task)
+        await session.commit()
+
+    await callback.answer("Добавлено в задачи.")
+    await callback.message.answer(f"✅ **{title}**\nДобавлено в дашборд.")
 
 
 @router.callback_query(F.data.startswith("full:"))
